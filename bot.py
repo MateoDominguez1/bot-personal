@@ -7,6 +7,7 @@ from calendar_helper import (
     get_today_schedule, get_tomorrow_schedule, get_week_schedule,
     get_next_week_schedule, get_next_exams, get_next_class,
     get_schedule_context, get_today_schedule_for_briefing,
+    get_upcoming_exams_for_briefing,
 )
 from apple_helper import AppleHelper
 import pdf_helper
@@ -717,7 +718,8 @@ def _send_briefing(chat_id):
     habits = notion.get_today_habits_raw()
     expenses = notion.get_today_expenses_raw()
     schedule = get_today_schedule_for_briefing()
-    send_message(chat_id, ai.generate_briefing(tasks, habits, expenses, clases, schedule))
+    upcoming_exams = get_upcoming_exams_for_briefing(days=20)
+    send_message(chat_id, ai.generate_briefing(tasks, habits, expenses, clases, schedule, upcoming_exams))
 
 
 def _send_pdf_apunte(chat_id, topic: str, pdf_text: str | None = None):

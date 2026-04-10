@@ -4,20 +4,10 @@ import base64
 from datetime import date
 from groq import Groq
 
-# Groq: classification, vision, transcription
 groq_client = Groq(api_key=os.environ.get("GROQ_API_KEY"))
-
-# Anthropic: study, briefing, chat, web search summaries
-try:
-    import anthropic
-    anthropic_client = anthropic.Anthropic(api_key=os.environ.get("ANTHROPIC_API_KEY"))
-    ANTHROPIC_AVAILABLE = True
-except Exception:
-    ANTHROPIC_AVAILABLE = False
 
 GROQ_MODEL = "llama-3.3-70b-versatile"
 VISION_MODEL = "llama-3.2-90b-vision-preview"
-CLAUDE_MODEL = "claude-haiku-4-5-20251001"
 
 SYSTEM_PROMPT = (
     "Sos un asistente personal inteligente que habla en espanol argentino. "
@@ -37,8 +27,7 @@ class AIHelper:
         if history:
             messages.extend(history[-18:])
         messages.append({"role": "user", "content": message})
-        return self._claude_ask(SYSTEM_PROMPT, message, history=history[-18:] if history else None) \
-               if ANTHROPIC_AVAILABLE else self._groq_ask_chat(messages)
+        return self._groq_ask_chat(messages)
 
     # ── Clasificacion de intento ─────────────────────────
 
@@ -225,7 +214,7 @@ class AIHelper:
                     results = list(ddgs.text(simplified, max_results=6))
 
             if not results:
-                return self._smart_ask(
+                return self._groq_ask(
                     f"Responde esta pregunta con tu conocimiento. "
                     f"Hoy es {TODAY}. Espanol argentino. Da la respuesta directamente.",
                     query,
@@ -243,14 +232,14 @@ class AIHelper:
                 "Si los resultados tienen la informacion, usala. "
                 "Si los resultados no son relevantes, responde con tu conocimiento."
             )
-            return self._smart_ask(system, f"Pregunta: {query}\n\nResultados:\n{context}", max_tokens=1500)
+            return self._groq_ask(system, f"Pregunta: {query}\n\nResultados:\n{context}", max_tokens=1500)
         except ImportError:
-            return self._smart_ask(
+            return self._groq_ask(
                 f"Responde esta pregunta con tu conocimiento. Hoy es {TODAY}. Espanol argentino.",
                 query,
             )
         except Exception:
-            return self._smart_ask(
+            return self._groq_ask(
                 f"Responde esta pregunta con tu conocimiento. Hoy es {TODAY}. Espanol argentino.",
                 query,
             )
@@ -258,7 +247,7 @@ class AIHelper:
     # ── Calendario ────────────────────────────────────────
 
     def answer_calendar_question(self, question: str, calendar_context: str) -> str:
-        return self._smart_ask(
+        return self._groq_ask(
             f"Hoy es {TODAY}. Sos un asistente que responde preguntas sobre el horario universitario. "
             "Tenes el calendario completo del estudiante. Responde de forma clara y "
             "concisa en espanol argentino. Si preguntan por un aula o ubicacion, incluila.\n\n"
@@ -270,7 +259,7 @@ class AIHelper:
     # ── Estudio (usa Claude si disponible) ───────────────
 
     def generate_flashcards(self, topic: str) -> str:
-        return self._smart_ask(
+        return self._groq_ask(
             "Genera 5 flashcards sobre el tema. Formato:\n\n"
             "*Flashcard 1*\n*Pregunta:* ...\n*Respuesta:* ...\n\n"
             "Usa espanol argentino. Se preciso y util para estudiar.",
@@ -278,7 +267,7 @@ class AIHelper:
         )
 
     def generate_quiz(self, topic: str) -> str:
-        return self._smart_ask(
+        return self._groq_ask(
             "Genera un quiz de 5 preguntas de opcion multiple.\nFormato:\n"
             "*Pregunta 1:* ...\nA) ...\nB) ...\nC) ...\nD) ...\n"
             "*Respuesta correcta:* ...\n*Explicacion:* ...\n\nUsa espanol argentino.",
@@ -286,14 +275,14 @@ class AIHelper:
         )
 
     def summarize(self, text: str) -> str:
-        return self._smart_ask(
+        return self._groq_ask(
             "Resumi el siguiente texto de forma clara y concisa en espanol "
             "argentino. Usa bullet points. Captura los puntos clave.",
             text, max_tokens=1200, temperature=0.3,
         )
 
     def explain(self, concept: str) -> str:
-        return self._smart_ask(
+        return self._groq_ask(
             "Explica el concepto de forma clara y simple, como si le explicaras "
             "a un estudiante universitario. Usa ejemplos practicos y analogias. "
             "Espanol argentino.",
@@ -302,7 +291,7 @@ class AIHelper:
 
     def answer_pdf_question(self, question: str, pdf_text: str) -> str:
         context = pdf_text[:12000]
-        return self._smart_ask(
+        return self._groq_ask(
             "El usuario te envio el contenido de un PDF. Responde su pregunta "
             "basandote en el contenido del documento. Se preciso y cita partes "
             "relevantes cuando sea util. Espanol argentino.",
@@ -315,7 +304,7 @@ class AIHelper:
             context = f"\n\nBASATE EN ESTE DOCUMENTO:\n{pdf_text[:10000]}"
         else:
             context = ""
-        return self._smart_ask(
+        return self._groq_ask(
             "Genera un apunte de estudio completo y bien estructurado sobre el tema. "
             "Incluye: definiciones clave, conceptos importantes, formulas si aplica, "
             "ejemplos, y un resumen final. Usa formato con titulos y bullet points. "
@@ -328,8 +317,8 @@ class AIHelper:
 
     def generate_briefing(self, tasks: list, habits: list, expenses: list,
                           clases: list | None = None,
-                          schedule_today: list | None = None) -> str:
-        # Format today's schedule compactly
+                          schedule_today: list | None = None,
+                          upcoming_exams: list | None = None) -> str:
         schedule_str = ""
         if schedule_today:
             schedule_lines = []
@@ -337,14 +326,20 @@ class AIHelper:
                 line = f"  {s['hora_inicio']}-{s['hora_fin']}  {s['materia']}"
                 if s.get("aula"):
                     line += f"  ({s['aula']})"
-                if s.get("tipo") == "Examen":
-                    line = "  📝 EXAMEN: " + line.strip()
                 schedule_lines.append(line)
             schedule_str = "\n".join(schedule_lines)
+
+        exams_str = ""
+        if upcoming_exams:
+            exams_str = "\n".join(
+                f"  {e['materia']} - {e['fecha']} {e['hora']} (en {e['dias_restantes']} dias)"
+                for e in upcoming_exams
+            )
 
         ctx = json.dumps(
             {
                 "clases_hoy_universidad": schedule_str or "Sin clases hoy",
+                "examenes_proximos_20_dias": exams_str or "Ninguno",
                 "tareas_pendientes": tasks,
                 "clases_pendientes_notion": clases or [],
                 "habitos_hoy": habits,
@@ -352,11 +347,11 @@ class AIHelper:
             },
             ensure_ascii=False,
         )
-        return self._smart_ask(
+        return self._groq_ask(
             "Genera un briefing matutino amigable y motivador en espanol argentino. "
-            "PRIMERO muestra las clases de hoy de la universidad (materia, hora, aula). "
-            "Luego tareas pendientes, habitos y movimientos financieros. "
-            "Se conciso. No repitas informacion.",
+            "PRIMERO las clases de hoy (materia, hora, aula). "
+            "Si hay examenes proximos en menos de 20 dias, mencionalos con urgencia. "
+            "Luego tareas pendientes, habitos y movimientos de hoy. Se conciso.",
             ctx, max_tokens=900,
         )
 
@@ -397,30 +392,6 @@ class AIHelper:
             return None
 
     # ── Utilidades internas ──────────────────────────────
-
-    def _smart_ask(self, system: str, user: str, **kwargs) -> str:
-        """Usa Claude si disponible, sino Groq."""
-        if ANTHROPIC_AVAILABLE:
-            return self._claude_ask(system, user, **kwargs)
-        return self._groq_ask(system, user, **kwargs)
-
-    def _claude_ask(self, system: str, user: str,
-                    history: list | None = None, **kwargs) -> str:
-        try:
-            messages = []
-            if history:
-                messages.extend(history)
-            messages.append({"role": "user", "content": user})
-            r = anthropic_client.messages.create(
-                model=CLAUDE_MODEL,
-                system=system,
-                messages=messages,
-                max_tokens=kwargs.get("max_tokens", 1024),
-            )
-            return r.content[0].text
-        except Exception as e:
-            print(f"Claude error: {e}")
-            return self._groq_ask(system, user, **kwargs)
 
     def _groq_ask(self, system: str, user: str, **kwargs) -> str:
         try:

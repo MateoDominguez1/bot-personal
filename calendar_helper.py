@@ -231,6 +231,26 @@ def get_next_class(materia=None) -> str:
     return f"*Proxima clase{' de ' + materia if materia else ''}:*\n{summary}\n{date_str}" + (f"  ({aula})" if aula else "")
 
 
+def get_upcoming_exams_for_briefing(days: int = 20) -> list:
+    """Devuelve examenes en los proximos N dias para el briefing."""
+    today = datetime.now(MILAN_TZ).date()
+    end = today + timedelta(days=days)
+    events = [e for e in _get_events(start_date=today, end_date=end) if _is_esame(e)]
+    result = []
+    for e in events:
+        summary = e["summary"]
+        if summary.startswith("Esame: "):
+            summary = summary[7:]
+        days_left = (e["start"].date() - today).days
+        result.append({
+            "materia": summary,
+            "fecha": e["start"].strftime("%d/%m"),
+            "hora": e["start"].strftime("%H:%M"),
+            "dias_restantes": days_left,
+        })
+    return result
+
+
 def get_today_schedule_for_briefing() -> list:
     """Devuelve lista compacta de clases de hoy para el briefing: [{materia, hora_inicio, hora_fin, aula, tipo}]"""
     today = datetime.now(MILAN_TZ).date()
