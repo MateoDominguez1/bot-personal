@@ -138,25 +138,25 @@ def _fmt_event(e: dict) -> str:
 
 def get_today_schedule() -> str:
     today = datetime.now(MILAN_TZ).date()
-    events = _get_events(start_date=today, end_date=today)
+    events = [e for e in _get_events(start_date=today, end_date=today) if not _is_esame(e)]
     if not events:
-        return "No tenes clases ni examenes hoy."
-    header = f"*Horario de hoy ({today.strftime('%d/%m/%Y')}):*\n"
+        return "No tenes clases hoy."
+    header = f"*Clases de hoy ({today.strftime('%d/%m/%Y')}):*\n"
     return header + "\n".join(_fmt_event(e) for e in events)
 
 
 def get_tomorrow_schedule() -> str:
     tomorrow = (datetime.now(MILAN_TZ) + timedelta(days=1)).date()
-    events = _get_events(start_date=tomorrow, end_date=tomorrow)
+    events = [e for e in _get_events(start_date=tomorrow, end_date=tomorrow) if not _is_esame(e)]
     if not events:
-        return "No tenes clases ni examenes manana."
-    header = f"*Horario de manana ({tomorrow.strftime('%d/%m/%Y')}):*\n"
+        return "No tenes clases manana."
+    header = f"*Clases de manana ({tomorrow.strftime('%d/%m/%Y')}):*\n"
     return header + "\n".join(_fmt_event(e) for e in events)
 
 
 def _build_week_message(monday, title: str) -> str:
-    friday = monday + timedelta(days=6)  # include weekend in case there's something
-    events = _get_events(start_date=monday, end_date=friday)
+    friday = monday + timedelta(days=6)
+    events = [e for e in _get_events(start_date=monday, end_date=friday) if not _is_esame(e)]
     if not events:
         return f"No tenes clases {title}."
 
@@ -234,7 +234,7 @@ def get_next_class(materia=None) -> str:
 def get_today_schedule_for_briefing() -> list:
     """Devuelve lista compacta de clases de hoy para el briefing: [{materia, hora_inicio, hora_fin, aula, tipo}]"""
     today = datetime.now(MILAN_TZ).date()
-    events = _get_events(start_date=today, end_date=today)
+    events = [e for e in _get_events(start_date=today, end_date=today) if not _is_esame(e)]
     result = []
     for e in events:
         summary = e["summary"]
