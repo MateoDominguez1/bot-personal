@@ -17,7 +17,6 @@ conversations = {}
 
 
 def send_message(chat_id, text, parse_mode="Markdown"):
-    # Telegram tiene límite de 4096 chars por mensaje
     if len(text) > 4000:
         for i in range(0, len(text), 4000):
             requests.post(f"{TELEGRAM_API}/sendMessage", json={
@@ -57,7 +56,6 @@ def health():
 
 @app.route("/set_webhook")
 def set_webhook():
-    """Llamar una vez después del deploy para registrar el webhook en Telegram."""
     url = request.host_url.rstrip("/") + "/webhook"
     r = requests.post(f"{TELEGRAM_API}/setWebhook", json={"url": url})
     return r.json()
@@ -86,7 +84,7 @@ def handle_message(message):
 
 def handle_command(chat_id, text):
     parts = text.split(maxsplit=1)
-    command = parts[0].lower().split("@")[0]   # quita @botusername
+    command = parts[0].lower().split("@")[0]
     args = parts[1] if len(parts) > 1 else ""
 
     if command == "/start":
@@ -95,6 +93,56 @@ def handle_command(chat_id, text):
     elif command == "/setup":
         send_action(chat_id)
         send_message(chat_id, notion.setup_databases())
+
+    # ── Facultad ─────────────────────────────────────
+
+    elif command == "/materias":
+        send_action(chat_id)
+        send_message(chat_id, notion.list_materias())
+
+    elif command == "/clase":
+        if not args:
+            send_message(chat_id, (
+                "Usa: /clase [materia] | [tema]\n"
+                "Ej: /clase analisi | Limites de funciones\n\n"
+                "Opciones extra:\n"
+                "/clase analisi | Limites | 2026-04-15\n"
+                "/clase analisi | Limites | 2026-04-15 | https://link.com"
+            ))
+            return
+        send_action(chat_id)
+        clase_parts = [p.strip() for p in args.split("|")]
+        if len(clase_parts) < 2:
+            send_message(chat_id, "Separa materia y tema con |\nEj: /clase analisi | Limites")
+            return
+        materia = clase_parts[0]
+        tema = clase_parts[1]
+        fecha = clase_parts[2] if len(clase_parts) > 2 else None
+        link = clase_parts[3] if len(clase_parts) > 3 else None
+        send_message(chat_id, notion.add_clase(materia, tema, fecha, link))
+
+    elif command == "/clases":
+        send_action(chat_id)
+        send_message(chat_id, notion.list_clases(args if args else None))
+
+    elif command == "/estado":
+        if not args or "|" not in args:
+            send_message(chat_id, (
+                "Usa: /estado [tema] | [nuevo estado]\n"
+                "Ej: /estado Limites | Aprendido\n\n"
+                "Estados: Clase Pendiente, Estudiando, Aprendido, "
+                "Visto en clase, Clase pendiente a ver"
+            ))
+            return
+        send_action(chat_id)
+        estado_parts = [p.strip() for p in args.split("|")]
+        send_message(chat_id, notion.update_clase_estado(estado_parts[0], estado_parts[1]))
+
+    elif command == "/examenes":
+        send_action(chat_id)
+        send_message(chat_id, notion.list_examenes())
+
+    # ── Personal ─────────────────────────────────────
 
     elif command == "/nota":
         if not args:
@@ -146,6 +194,8 @@ def handle_command(chat_id, text):
         send_action(chat_id)
         send_message(chat_id, notion.list_habits())
 
+    # ── Estudio ──────────────────────────────────────
+
     elif command == "/flashcards":
         if not args:
             send_message(chat_id, "Usa: /flashcards [tema]\nEj: /flashcards fotosintesis")
@@ -177,18 +227,17 @@ def handle_command(chat_id, text):
     elif command == "/briefing":
         send_action(chat_id)
         tasks = notion.get_pending_tasks_raw()
+        clases = notion.get_pending_clases_raw()
         habits = notion.get_today_habits_raw()
         expenses = notion.get_today_expenses_raw()
-        send_message(chat_id, ai.generate_briefing(tasks, habits, expenses))
+        send_message(chat_id, ai.generate_briefing(tasks, habits, expenses, clases))
 
     else:
         send_message(chat_id, "Comando no reconocido. Usa /start para ver los comandos.")
 
 
 def handle_text(chat_id, text):
-    """Mensaje de texto libre: clasifica intento o conversa."""
     send_action(chat_id)
-
     intent = ai.classify_intent(text)
 
     if intent["type"] == "nota":
@@ -202,7 +251,6 @@ def handle_text(chat_id, text):
     elif intent["type"] == "habito":
         send_message(chat_id, notion.track_habit(intent.get("content", text)))
     else:
-        # Conversacion general
         if chat_id not in conversations:
             conversations[chat_id] = []
         history = conversations[chat_id]
@@ -214,9 +262,7 @@ def handle_text(chat_id, text):
 
 
 def handle_voice(chat_id, voice):
-    """Recibe audio, transcribe con Whisper y procesa el texto."""
     send_action(chat_id)
-
     file_info = requests.get(
         f"{TELEGRAM_API}/getFile", params={"file_id": voice["file_id"]}
     ).json()
@@ -239,7 +285,14 @@ WELCOME_MSG = """*Hola! Soy tu asistente personal*
 
 Esto es lo que puedo hacer:
 
-*Notas y Tareas*
+*Facultad (Politecnico di Milano)*
+/materias - Ver tus materias
+/clase [materia] | [tema] - Agregar clase
+/clases - Ver clases pendientes
+/estado [tema] | [estado] - Cambiar estado de clase
+/examenes - Ver proximos examenes
+
+*Notas y Tareas personales*
 /nota [texto] - Guardar una nota
 /tarea [texto] - Agregar tarea
 /tareas - Ver tareas pendientes
@@ -252,7 +305,7 @@ Esto es lo que puedo hacer:
 
 *Gastos*
 /gasto [monto] [descripcion]
-/gastos - Ver resumen de gastos del dia
+/gastos - Ver gastos del dia
 
 *Habitos*
 /habito [nombre] - Registrar habito
@@ -260,12 +313,10 @@ Esto es lo que puedo hacer:
 
 *Otros*
 /briefing - Resumen del dia
-/setup - Configurar bases de datos en Notion
+/setup - Configurar Notion
 
 Tambien podes hablarme normal o mandarme audios!"""
 
-
-# ── Main ─────────────────────────────────────────────────
 
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 5000))

@@ -98,14 +98,20 @@ class AIHelper:
 
     # ── Briefing ─────────────────────────────────────────
 
-    def generate_briefing(self, tasks: list, habits: list, expenses: list) -> str:
+    def generate_briefing(self, tasks: list, habits: list, expenses: list,
+                          clases: list | None = None) -> str:
         ctx = json.dumps(
-            {"tareas_pendientes": tasks, "habitos_hoy": habits, "gastos_hoy": expenses},
+            {
+                "tareas_pendientes": tasks,
+                "clases_pendientes": clases or [],
+                "habitos_hoy": habits,
+                "gastos_hoy": expenses,
+            },
             ensure_ascii=False,
         )
         return self._ask(
             "Genera un briefing matutino amigable y motivador en espanol argentino. "
-            "Resumi tareas pendientes, habitos y gastos del dia. Se conciso.",
+            "Resumi clases pendientes de la facultad, tareas, habitos y gastos del dia. Se conciso.",
             ctx, max_tokens=800,
         )
 
