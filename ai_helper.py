@@ -79,9 +79,14 @@ class AIHelper:
                 '19. Quiz: {"type":"quiz","tema":"tema"}\n\n'
                 '20. Resumir: {"type":"resumir","content":"texto"}\n\n'
                 '21. Explicar: {"type":"explicar","content":"concepto"}\n\n'
-                '22. Briefing: {"type":"briefing"}\n'
+                '22. Balance: {"type":"balance"}\n'
+                '   Ej: "cuanta plata tengo" "cual es mi balance" "como estoy de plata"\n\n'
+                '23. Busqueda/noticias: {"type":"busqueda","query":"lo que quiere buscar"}\n'
+                '   Ej: "que esta pasando en argentina" "busca sobre inteligencia artificial"\n'
+                '   "que noticias hay hoy" "quien gano el partido"\n\n'
+                '24. Briefing: {"type":"briefing"}\n'
                 '   Ej: "como viene el dia" "que tengo para hoy"\n\n'
-                '23. Chat general: {"type":"chat"}\n'
+                '25. Chat general: {"type":"chat"}\n'
                 '   Cuando no encaja en ninguna otra categoria.\n\n'
                 "IMPORTANTE: Se flexible con el lenguaje. El usuario habla en argentino. "
                 "No necesita usar palabras exactas. Interpreta la intencion."
@@ -175,6 +180,42 @@ class AIHelper:
         except Exception as e:
             print(f"Routine parse error: {e}")
         return None
+
+    # ── Busqueda web ───────────────────────────────────────
+
+    def web_search(self, query: str) -> str:
+        """Busca en internet y resume los resultados."""
+        try:
+            from duckduckgo_search import DDGS
+            with DDGS() as ddgs:
+                results = list(ddgs.text(query, max_results=5))
+
+            if not results:
+                return self._ask(
+                    "Responde esta pregunta con tu conocimiento. Espanol argentino.",
+                    query,
+                )
+
+            context = "\n\n".join(
+                f"**{r['title']}**\n{r['body']}" for r in results
+            )
+            return self._ask(
+                "Usa los siguientes resultados de busqueda para responder la pregunta "
+                "del usuario de forma clara y concisa en espanol argentino. "
+                "Si los resultados no son relevantes, responde con tu conocimiento.",
+                f"Pregunta: {query}\n\nResultados:\n{context}",
+                max_tokens=1500,
+            )
+        except ImportError:
+            return self._ask(
+                "Responde esta pregunta con tu conocimiento. Espanol argentino.",
+                query,
+            )
+        except Exception as e:
+            return self._ask(
+                "Responde esta pregunta con tu conocimiento. Espanol argentino.",
+                query,
+            )
 
     # ── Estudio ──────────────────────────────────────────
 

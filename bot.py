@@ -208,6 +208,10 @@ def handle_command(chat_id, text):
         send_action(chat_id)
         send_message(chat_id, notion.list_finances("today"))
 
+    elif command == "/balance":
+        send_action(chat_id)
+        send_message(chat_id, notion.get_balance())
+
     # ── Personal ─────────────────────────────────────
 
     elif command == "/nota":
@@ -492,6 +496,14 @@ def handle_text(chat_id, text):
         habits = notion.get_today_habits_raw()
         expenses = notion.get_today_expenses_raw()
         send_message(chat_id, ai.generate_briefing(tasks, habits, expenses, clases))
+
+    # ── Balance ───────────────────────────────────────
+    elif t == "balance":
+        send_message(chat_id, notion.get_balance())
+
+    # ── Busqueda web / noticias ──────────────────────
+    elif t == "busqueda":
+        send_message(chat_id, ai.web_search(intent.get("query", text)))
 
     # ── Chat general ─────────────────────────────────
     else:

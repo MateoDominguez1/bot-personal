@@ -342,6 +342,67 @@ class NotionHelper:
         except Exception as e:
             return f"Error: {e}"
 
+    def get_balance(self) -> str:
+        """Calcula balance total: todos los ingresos - todos los gastos + fijos del mes."""
+        try:
+            # Movimientos del mes actual
+            first_of_month = date.today().replace(day=1).isoformat()
+            fin_db = self.life.get("finanzas")
+            fijos_db = self.life.get("gastos_fijos")
+
+            ingresos = 0.0
+            gastos = 0.0
+
+            if fin_db:
+                results = notion.databases.query(
+                    database_id=fin_db,
+                    filter={"property": "Fecha", "date": {"on_or_after": first_of_month}},
+                )
+                for item in results.get("results", []):
+                    props = item["properties"]
+                    amt = props["Monto"]["number"] or 0
+                    tipo = props["Tipo"]["select"]["name"] if props["Tipo"].get("select") else ""
+                    if tipo == "Ingreso":
+                        ingresos += amt
+                    else:
+                        gastos += amt
+
+            # Fijos mensuales
+            fijos_gastos = 0.0
+            fijos_ingresos = 0.0
+            if fijos_db:
+                results = notion.databases.query(
+                    database_id=fijos_db,
+                    filter={"property": "Activo", "checkbox": {"equals": True}},
+                )
+                for item in results.get("results", []):
+                    props = item["properties"]
+                    amt = props["Monto"]["number"] or 0
+                    tipo = props["Tipo"]["select"]["name"] if props["Tipo"].get("select") else ""
+                    if tipo == "Ingreso":
+                        fijos_ingresos += amt
+                    else:
+                        fijos_gastos += amt
+
+            balance = (ingresos + fijos_ingresos) - (gastos + fijos_gastos)
+
+            msg = "*💰 Balance del mes*\n\n"
+            msg += f"*Ingresos registrados:* ${ingresos}\n"
+            msg += f"*Gastos registrados:* ${gastos}\n"
+            msg += f"*Fijos ingresos:* ${fijos_ingresos}/mes\n"
+            msg += f"*Fijos gastos:* ${fijos_gastos}/mes\n"
+            msg += f"\n*💵 Balance estimado: ${balance}*"
+
+            if balance > 0:
+                msg += "\n\nVas bien este mes!"
+            elif balance < 0:
+                msg += f"\n\nEstas ${abs(balance)} en rojo. Cuidado con los gastos!"
+            else:
+                msg += "\n\nEstas justo, sin excedente."
+            return msg
+        except Exception as e:
+            return f"Error al calcular balance: {e}"
+
     # ══════════════════════════════════════════════════════
     #  RUTINA
     # ══════════════════════════════════════════════════════
