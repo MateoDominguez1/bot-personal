@@ -553,6 +553,7 @@ WELCOME_MSG = """*Hola! Soy tu asistente personal*
 /fijos - Ver fijos mensuales
 /finanzas - Resumen de hoy
 /finanzas mes - Resumen del mes
+/balance - Cuanta plata tenes
 Tambien podes mandar una FOTO de un ticket!
 
 *Notas y Tareas*
@@ -578,7 +579,7 @@ Manda un archivo con caption "rutina" para importar!
 
 *Otros*
 /briefing - Resumen del dia
-/setup - Configurar Notion
+Preguntame lo que quieras, busco en internet!
 
 Hablame normal o mandame audios!"""
 
