@@ -3,6 +3,10 @@ import requests
 from flask import Flask, request
 from ai_helper import AIHelper
 from notion_helper import NotionHelper
+from calendar_helper import (
+    get_today_schedule, get_tomorrow_schedule, get_week_schedule,
+    get_next_exams, get_next_class, get_schedule_context,
+)
 
 app = Flask(__name__)
 
@@ -143,6 +147,18 @@ def handle_command(chat_id, text):
     elif command == "/examenes":
         send_action(chat_id)
         send_message(chat_id, notion.list_examenes())
+
+    elif command == "/horario":
+        send_action(chat_id)
+        arg = args.strip().lower() if args else "hoy"
+        if arg in ("manana", "mañana"):
+            send_message(chat_id, get_tomorrow_schedule())
+        elif arg in ("semana", "week"):
+            send_message(chat_id, get_week_schedule())
+        elif arg in ("examenes", "parciales"):
+            send_message(chat_id, get_next_exams())
+        else:
+            send_message(chat_id, get_today_schedule())
 
     # ── Finanzas ─────────────────────────────────────
 
@@ -501,6 +517,25 @@ def handle_text(chat_id, text):
     elif t == "balance":
         send_message(chat_id, notion.get_balance())
 
+    # ── Horario / Calendario ─────────────────────────
+    elif t == "horario":
+        periodo = intent.get("periodo", "hoy")
+        materia = intent.get("materia")
+        pregunta = intent.get("pregunta")
+        if periodo == "hoy":
+            send_message(chat_id, get_today_schedule())
+        elif periodo == "manana":
+            send_message(chat_id, get_tomorrow_schedule())
+        elif periodo == "semana":
+            send_message(chat_id, get_week_schedule())
+        elif periodo == "examenes":
+            send_message(chat_id, get_next_exams())
+        elif periodo == "proxima_clase":
+            send_message(chat_id, get_next_class(materia))
+        else:
+            ctx = get_schedule_context()
+            send_message(chat_id, ai.answer_calendar_question(text, ctx))
+
     # ── Busqueda web / noticias ──────────────────────
     elif t == "busqueda":
         send_message(chat_id, ai.web_search(intent.get("query", text)))
@@ -545,6 +580,7 @@ WELCOME_MSG = """*Hola! Soy tu asistente personal*
 /clases - Ver clases pendientes
 /estado tema | estado - Cambiar estado
 /examenes - Proximos examenes
+/horario - Clases de hoy (manana/semana/examenes)
 
 *Finanzas*
 /gasto monto descripcion - Registrar gasto

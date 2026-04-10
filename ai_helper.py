@@ -86,7 +86,15 @@ class AIHelper:
                 '   "que noticias hay hoy" "quien gano el partido"\n\n'
                 '24. Briefing: {"type":"briefing"}\n'
                 '   Ej: "como viene el dia" "que tengo para hoy"\n\n'
-                '25. Chat general: {"type":"chat"}\n'
+                '25. Horario/calendario: {"type":"horario","periodo":"hoy|manana|semana|examenes|proxima_clase",'
+                '"materia":"nombre o null","pregunta":"pregunta original o null"}\n'
+                '   Ej: "que clases tengo hoy" -> periodo=hoy\n'
+                '   "a que hora es fisica manana" -> periodo=manana, materia=fisica\n'
+                '   "cuando es el proximo parcial" -> periodo=examenes\n'
+                '   "cuando tengo elettrotecnica" -> periodo=proxima_clase, materia=elettrotecnica\n'
+                '   "que horarios tengo esta semana" -> periodo=semana\n'
+                '   "donde es la clase de fisica" -> periodo=proxima_clase, materia=fisica, pregunta=donde es\n\n'
+                '26. Chat general: {"type":"chat"}\n'
                 '   Cuando no encaja en ninguna otra categoria.\n\n'
                 "IMPORTANTE: Se flexible con el lenguaje. El usuario habla en argentino. "
                 "No necesita usar palabras exactas. Interpreta la intencion."
@@ -267,6 +275,20 @@ class AIHelper:
             "Resumi clases pendientes de la facultad, tareas, habitos y "
             "movimientos financieros del dia (gastos e ingresos). Se conciso.",
             ctx, max_tokens=800,
+        )
+
+    # ── Calendario ───────────────────────────────────────
+
+    def answer_calendar_question(self, question: str, calendar_context: str) -> str:
+        return self._ask(
+            "Sos un asistente que responde preguntas sobre el horario universitario. "
+            "Tenes el calendario completo del estudiante. Responde de forma clara y "
+            "concisa en espanol argentino. Si preguntan por un aula o ubicacion, "
+            "incluila. Usa formato legible con horarios.\n\n"
+            f"CALENDARIO (formato: fecha hora | evento | aula | tipo):\n{calendar_context}",
+            question,
+            max_tokens=800,
+            temperature=0.3,
         )
 
     # ── Gastos ───────────────────────────────────────────
