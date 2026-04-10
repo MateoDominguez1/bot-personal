@@ -38,6 +38,10 @@ class AIHelper:
                 "Sos un clasificador de intenciones. El usuario te habla en lenguaje natural "
                 "y vos tenes que entender que quiere hacer. "
                 "Responde UNICAMENTE con un JSON valido, sin texto adicional.\n\n"
+                "REGLA CRITICA: Si el usuario pregunta algo sobre el mundo real (noticias, "
+                "resultados deportivos, clima, precios, eventos actuales, 'quien gano', 'como esta', "
+                "'que paso con') USA SIEMPRE type=busqueda. NUNCA uses type=chat para preguntas "
+                "sobre hechos del mundo real.\n\n"
                 "Tipos posibles y sus campos:\n\n"
                 '1. Agregar clase: {"type":"clase","materia":"nombre parcial o completo",'
                 '"tema":"tema de la clase","fecha":"YYYY-MM-DD o null","link":"url o null"}\n'
@@ -48,7 +52,8 @@ class AIHelper:
                 '3. Cambiar estado clase: {"type":"estado_clase","tema":"busqueda parcial",'
                 '"estado":"Clase Pendiente|Estudiando|Aprendido|Visto en clase|Clase pendiente a ver"}\n\n'
                 '4. Ver materias: {"type":"ver_materias"}\n\n'
-                '5. Ver examenes (en Notion): {"type":"ver_examenes"}\n\n'
+                '5. Ver examenes del calendario universitario: {"type":"horario","periodo":"examenes","materia":null,"pregunta":null}\n'
+                '   Ej: "que examenes tengo" "cuando son los parciales" "proximos examenes"\n\n'
                 '6. Gasto: {"type":"gasto","amount":0,"description":"","category":"Comida|Transporte|'
                 'Entretenimiento|Salud|Educacion|Alquiler|Servicios|Ropa|Otros"}\n\n'
                 '7. Ingreso: {"type":"ingreso","amount":0,"description":"","category":"Sueldo|Freelance|Regalo|Otros"}\n\n'

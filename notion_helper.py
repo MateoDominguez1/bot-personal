@@ -687,6 +687,8 @@ class NotionHelper:
             )
             return f"Clase agregada: *{tema}* ({materia})"
         except Exception as e:
+            if "does not contain any data sources" in str(e) or "restricted" in str(e).lower():
+                return "No tengo acceso a Notion. Ve a la DB de Lezioni/Materie → ... → Connections → conecta tu integracion."
             return f"Error al agregar clase: {e}"
 
     def list_clases(self, estado: str | None = None) -> str:
@@ -702,7 +704,7 @@ class NotionHelper:
             )
             clases = results.get("results", [])
             if not clases:
-                return "No hay clases pendientes."
+                return "No hay clases registradas." + (" con estado '" + estado + "'" if estado else "")
             estado_emoji = {
                 "Clase Pendiente": "\U0001f534", "Estudiando": "\U0001f535",
                 "Aprendido": "\U0001f7e2", "Visto en clase": "\U0001f7e1",
@@ -720,6 +722,15 @@ class NotionHelper:
                 msg += f"{emoji} {tema}{fecha} [{est}]\n"
             return msg
         except Exception as e:
+            if "does not contain any data sources" in str(e) or "restricted" in str(e).lower():
+                return (
+                    "No tengo acceso a la base de datos de clases en Notion.\n\n"
+                    "Para solucionarlo:\n"
+                    "1. Abre Notion en el navegador\n"
+                    "2. Entra a la base de datos de Lezioni\n"
+                    "3. Arriba a la derecha: *...* → *Connections* → busca tu integracion y conectala\n"
+                    "Hace lo mismo con Materie y Esami."
+                )
             return f"Error: {e}"
 
     def update_clase_estado(self, tema_query: str, nuevo_estado: str) -> str:
