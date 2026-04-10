@@ -12,5 +12,11 @@ services:
         sync: false
       - key: NOTION_TOKEN
         sync: false
+      - key: ANTHROPIC_API_KEY
+        sync: false
+      - key: APPLE_ID
+        sync: false
+      - key: APPLE_APP_PASSWORD
+        sync: false
       - key: PYTHON_VERSION
         value: "3.12.3"

@@ -9,6 +9,11 @@ MILAN_TZ = tz.gettz("Europe/Rome")
 _cache = {"data": None, "fetched": None}
 CACHE_TTL = timedelta(hours=1)
 
+DAY_NAMES = {
+    "Monday": "Lunes", "Tuesday": "Martes", "Wednesday": "Miercoles",
+    "Thursday": "Jueves", "Friday": "Viernes", "Saturday": "Sabado", "Sunday": "Domingo",
+}
+
 
 def _fetch_calendar():
     now = datetime.now()
@@ -37,6 +42,26 @@ def _parse_dt(dt_prop):
     return datetime.combine(dt, datetime.min.time()).replace(tzinfo=MILAN_TZ)
 
 
+def _extract_aula(location: str) -> str:
+    """Extrae numero/nombre del aula de la cadena de ubicacion."""
+    if not location:
+        return ""
+    # Formato tipico: "Aula X.Y.Z - Edificio, Direccion, Ciudad"
+    parts = location.split(",")
+    first = parts[0].strip()
+    # Remove common prefixes
+    for prefix in ["Aula ", "Room ", "Sala "]:
+        if first.startswith(prefix):
+            return first
+    return first
+
+
+def _is_esame(event: dict) -> bool:
+    cat = event.get("category", "").lower()
+    summary = event.get("summary", "").lower()
+    return "esame" in cat or "esame" in summary or "exam" in cat
+
+
 def _get_events(start_date=None, end_date=None, category=None):
     cal = _fetch_calendar()
     if not cal:
@@ -57,7 +82,15 @@ def _get_events(start_date=None, end_date=None, category=None):
         if end_date and dt_start.date() > end_date:
             continue
 
-        cat = str(comp.get("categories", ""))
+        # categories field can be a list or string
+        cat_raw = comp.get("categories")
+        if cat_raw is None:
+            cat = ""
+        elif hasattr(cat_raw, "cats"):
+            cat = ",".join(str(c) for c in cat_raw.cats)
+        else:
+            cat = str(cat_raw)
+
         if category and category.lower() not in cat.lower():
             continue
 
@@ -78,62 +111,84 @@ def _get_events(start_date=None, end_date=None, category=None):
     return events
 
 
-def _fmt_event(e):
+def _fmt_event(e: dict) -> str:
     start = e["start"].strftime("%H:%M")
     end = e["end"].strftime("%H:%M") if e["end"] else "?"
-    loc = e["location"]
-    loc_short = loc.split(",")[0] if loc else ""
-    return f"  {start}-{end}  {e['summary']}" + (f"\n  {loc_short}" if loc_short else "")
+    aula = _extract_aula(e["location"])
+
+    # Extract just the course name (remove prefix like "Lezione: Didattica - ")
+    summary = e["summary"]
+    for prefix in ["Lezione: Didattica - ", "Lezione: ", "Esame: "]:
+        if summary.startswith(prefix):
+            summary = summary[len(prefix):]
+            break
+
+    if _is_esame(e):
+        icon = "📝"
+        label = f"EXAMEN: {summary}"
+    else:
+        icon = "📚"
+        label = summary
+
+    line = f"  {icon} {start}-{end}  {label}"
+    if aula:
+        line += f"  ({aula})"
+    return line
 
 
-def get_today_schedule():
+def get_today_schedule() -> str:
     today = datetime.now(MILAN_TZ).date()
     events = _get_events(start_date=today, end_date=today)
     if not events:
         return "No tenes clases ni examenes hoy."
     header = f"*Horario de hoy ({today.strftime('%d/%m/%Y')}):*\n"
-    return header + "\n\n".join(_fmt_event(e) for e in events)
+    return header + "\n".join(_fmt_event(e) for e in events)
 
 
-def get_tomorrow_schedule():
+def get_tomorrow_schedule() -> str:
     tomorrow = (datetime.now(MILAN_TZ) + timedelta(days=1)).date()
     events = _get_events(start_date=tomorrow, end_date=tomorrow)
     if not events:
         return "No tenes clases ni examenes manana."
     header = f"*Horario de manana ({tomorrow.strftime('%d/%m/%Y')}):*\n"
-    return header + "\n\n".join(_fmt_event(e) for e in events)
+    return header + "\n".join(_fmt_event(e) for e in events)
 
 
-def get_week_schedule():
-    today = datetime.now(MILAN_TZ).date()
-    # Lunes de esta semana
-    monday = today - timedelta(days=today.weekday())
-    friday = monday + timedelta(days=4)
+def _build_week_message(monday, title: str) -> str:
+    friday = monday + timedelta(days=6)  # include weekend in case there's something
     events = _get_events(start_date=monday, end_date=friday)
     if not events:
-        return "No tenes clases esta semana."
+        return f"No tenes clases {title}."
 
     days = {}
     for e in events:
-        day_name = e["start"].strftime("%A %d/%m")
-        days.setdefault(day_name, []).append(e)
+        day_key = e["start"].strftime("%A %d/%m")
+        days.setdefault(day_key, []).append(e)
 
-    DAY_NAMES = {
-        "Monday": "Lunes", "Tuesday": "Martes", "Wednesday": "Miercoles",
-        "Thursday": "Jueves", "Friday": "Viernes", "Saturday": "Sabado", "Sunday": "Domingo",
-    }
-
-    lines = ["*Horario de la semana:*\n"]
-    for day, evts in days.items():
+    lines = [f"*Horario {title}:*\n"]
+    for day_key, evts in days.items():
+        day_esp = day_key
         for eng, esp in DAY_NAMES.items():
-            day = day.replace(eng, esp)
-        lines.append(f"\n*{day}*")
+            day_esp = day_esp.replace(eng, esp)
+        lines.append(f"\n*{day_esp}*")
         for e in evts:
             lines.append(_fmt_event(e))
     return "\n".join(lines)
 
 
-def get_next_exams():
+def get_week_schedule() -> str:
+    today = datetime.now(MILAN_TZ).date()
+    monday = today - timedelta(days=today.weekday())
+    return _build_week_message(monday, "de esta semana")
+
+
+def get_next_week_schedule() -> str:
+    today = datetime.now(MILAN_TZ).date()
+    monday = today - timedelta(days=today.weekday()) + timedelta(days=7)
+    return _build_week_message(monday, "de la semana que viene")
+
+
+def get_next_exams() -> str:
     today = datetime.now(MILAN_TZ).date()
     events = _get_events(start_date=today, category="Esame")
     if not events:
@@ -142,14 +197,15 @@ def get_next_exams():
     lines = ["*Proximos examenes:*\n"]
     for e in events:
         date_str = e["start"].strftime("%d/%m/%Y %H:%M")
-        lines.append(f"  {e['summary']}\n  {date_str}")
-        if e["location"]:
-            lines.append(f"  {e['location'].split(',')[0]}")
-        lines.append("")
-    return "\n".join(lines)
+        summary = e["summary"]
+        if summary.startswith("Esame: "):
+            summary = summary[7:]
+        aula = _extract_aula(e["location"])
+        lines.append(f"📝 *{summary}*\n  {date_str}" + (f"  ({aula})" if aula else ""))
+    return "\n\n".join(lines)
 
 
-def get_next_class(materia=None):
+def get_next_class(materia=None) -> str:
     today = datetime.now(MILAN_TZ).date()
     events = _get_events(start_date=today, category="Lezione")
 
@@ -166,11 +222,37 @@ def get_next_class(materia=None):
 
     e = future[0]
     date_str = e["start"].strftime("%d/%m %H:%M")
-    loc = e["location"].split(",")[0] if e["location"] else ""
-    return f"*Proxima clase{' de ' + materia if materia else ''}:*\n{e['summary']}\n{date_str}" + (f"\n{loc}" if loc else "")
+    aula = _extract_aula(e["location"])
+    summary = e["summary"]
+    for prefix in ["Lezione: Didattica - ", "Lezione: "]:
+        if summary.startswith(prefix):
+            summary = summary[len(prefix):]
+            break
+    return f"*Proxima clase{' de ' + materia if materia else ''}:*\n{summary}\n{date_str}" + (f"  ({aula})" if aula else "")
 
 
-def get_schedule_context():
+def get_today_schedule_for_briefing() -> list:
+    """Devuelve lista compacta de clases de hoy para el briefing: [{materia, hora_inicio, hora_fin, aula, tipo}]"""
+    today = datetime.now(MILAN_TZ).date()
+    events = _get_events(start_date=today, end_date=today)
+    result = []
+    for e in events:
+        summary = e["summary"]
+        for prefix in ["Lezione: Didattica - ", "Lezione: ", "Esame: "]:
+            if summary.startswith(prefix):
+                summary = summary[len(prefix):]
+                break
+        result.append({
+            "materia": summary,
+            "hora_inicio": e["start"].strftime("%H:%M"),
+            "hora_fin": e["end"].strftime("%H:%M") if e["end"] else "?",
+            "aula": _extract_aula(e["location"]),
+            "tipo": "Examen" if _is_esame(e) else "Clase",
+        })
+    return result
+
+
+def get_schedule_context() -> str:
     """Devuelve contexto completo del calendario para que la IA responda preguntas."""
     today = datetime.now(MILAN_TZ).date()
     end = today + timedelta(days=30)
@@ -183,7 +265,13 @@ def get_schedule_context():
     for e in events:
         start = e["start"].strftime("%Y-%m-%d %H:%M")
         end_t = e["end"].strftime("%H:%M") if e["end"] else "?"
-        loc = e["location"].split(",")[0] if e["location"] else "sin aula"
-        lines.append(f"{start}-{end_t} | {e['summary']} | {loc} | {e['category']}")
+        aula = _extract_aula(e["location"]) or "sin aula"
+        tipo = "Examen" if _is_esame(e) else "Clase"
+        summary = e["summary"]
+        for prefix in ["Lezione: Didattica - ", "Lezione: ", "Esame: "]:
+            if summary.startswith(prefix):
+                summary = summary[len(prefix):]
+                break
+        lines.append(f"{start}-{end_t} | {tipo} | {summary} | {aula}")
 
     return "\n".join(lines)

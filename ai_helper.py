@@ -1,12 +1,23 @@
 import os
 import json
 import base64
+from datetime import date
 from groq import Groq
 
-client = Groq(api_key=os.environ.get("GROQ_API_KEY"))
+# Groq: classification, vision, transcription
+groq_client = Groq(api_key=os.environ.get("GROQ_API_KEY"))
 
-MODEL = "llama-3.3-70b-versatile"
+# Anthropic: study, briefing, chat, web search summaries
+try:
+    import anthropic
+    anthropic_client = anthropic.Anthropic(api_key=os.environ.get("ANTHROPIC_API_KEY"))
+    ANTHROPIC_AVAILABLE = True
+except Exception:
+    ANTHROPIC_AVAILABLE = False
+
+GROQ_MODEL = "llama-3.3-70b-versatile"
 VISION_MODEL = "llama-3.2-90b-vision-preview"
+CLAUDE_MODEL = "claude-haiku-4-5-20251001"
 
 SYSTEM_PROMPT = (
     "Sos un asistente personal inteligente que habla en espanol argentino. "
@@ -14,29 +25,27 @@ SYSTEM_PROMPT = (
     "Ayudas con estudio, organizacion, tareas y lo que el usuario necesite."
 )
 
+TODAY = date.today().isoformat()
+
 
 class AIHelper:
-    # ── Conversacion general ─────────────────────────────
+
+    # ── Chat general ─────────────────────────────────────
 
     def chat(self, message: str, history: list | None = None) -> str:
         messages = [{"role": "system", "content": SYSTEM_PROMPT}]
         if history:
             messages.extend(history[-18:])
         messages.append({"role": "user", "content": message})
-        try:
-            r = client.chat.completions.create(
-                model=MODEL, messages=messages,
-                max_tokens=1024, temperature=0.7,
-            )
-            return r.choices[0].message.content
-        except Exception as e:
-            return f"Error al procesar: {e}"
+        return self._claude_ask(SYSTEM_PROMPT, message, history=history[-18:] if history else None) \
+               if ANTHROPIC_AVAILABLE else self._groq_ask_chat(messages)
 
     # ── Clasificacion de intento ─────────────────────────
 
     def classify_intent(self, text: str) -> dict:
         messages = [
             {"role": "system", "content": (
+                f"Hoy es {TODAY}. "
                 "Sos un clasificador de intenciones. El usuario te habla en lenguaje natural "
                 "y vos tenes que entender que quiere hacer. "
                 "Responde UNICAMENTE con un JSON valido, sin texto adicional.\n\n"
@@ -45,66 +54,72 @@ class AIHelper:
                 '"tema":"tema de la clase","fecha":"YYYY-MM-DD o null","link":"url o null"}\n'
                 '   Ej: "tuve clase de analisis sobre limites" -> materia=analisi, tema=Limites\n\n'
                 '2. Ver clases: {"type":"ver_clases","estado":"estado o null"}\n'
-                '   Ej: "que clases tengo pendientes" -> estado=Clase Pendiente\n\n'
+                '   Ej: "que clases tengo pendientes" -> estado=Clase Pendiente\n'
+                '   "que clases me quedan por ver" -> estado=Clase pendiente a ver\n\n'
                 '3. Cambiar estado clase: {"type":"estado_clase","tema":"busqueda parcial",'
-                '"estado":"Clase Pendiente|Estudiando|Aprendido|Visto en clase|Clase pendiente a ver"}\n'
-                '   Ej: "ya aprendi limites" -> tema=limites, estado=Aprendido\n\n'
+                '"estado":"Clase Pendiente|Estudiando|Aprendido|Visto en clase|Clase pendiente a ver"}\n\n'
                 '4. Ver materias: {"type":"ver_materias"}\n\n'
-                '5. Ver examenes: {"type":"ver_examenes"}\n\n'
+                '5. Ver examenes (en Notion): {"type":"ver_examenes"}\n\n'
                 '6. Gasto: {"type":"gasto","amount":0,"description":"","category":"Comida|Transporte|'
-                'Entretenimiento|Salud|Educacion|Alquiler|Servicios|Ropa|Otros"}\n'
-                '   Ej: "gaste 500 en un almuerzo" -> amount=500, desc=almuerzo, cat=Comida\n\n'
-                '7. Ingreso: {"type":"ingreso","amount":0,"description":"","category":"Sueldo|Freelance|Regalo|Otros"}\n'
-                '   Ej: "me pagaron 50000" -> amount=50000, desc=sueldo, cat=Sueldo\n\n'
+                'Entretenimiento|Salud|Educacion|Alquiler|Servicios|Ropa|Otros"}\n\n'
+                '7. Ingreso: {"type":"ingreso","amount":0,"description":"","category":"Sueldo|Freelance|Regalo|Otros"}\n\n'
                 '8. Gasto fijo: {"type":"fijo","amount":0,"description":"","tipo_fijo":"Gasto|Ingreso",'
-                '"category":"","dia_mes":1}\n'
-                '   Ej: "el alquiler es 300 euros el dia 5" -> amount=300, desc=alquiler, tipo_fijo=Gasto, dia_mes=5\n\n'
-                '9. Ver finanzas: {"type":"ver_finanzas","periodo":"today|month"}\n'
-                '   Ej: "cuanto gaste hoy" -> today, "cuanto gaste este mes" -> month\n\n'
+                '"category":"","dia_mes":1}\n\n'
+                '9. Ver finanzas: {"type":"ver_finanzas","periodo":"today|month"}\n\n'
                 '10. Ver fijos: {"type":"ver_fijos"}\n\n'
-                '11. Nota: {"type":"nota","content":"texto de la nota"}\n'
-                '   Ej: "anota que tengo que llamar al medico" -> content=llamar al medico\n\n'
-                '12. Tarea: {"type":"tarea","content":"descripcion de la tarea"}\n'
-                '   Ej: "tengo que hacer el tp de fisica" -> content=hacer el tp de fisica\n\n'
-                '13. Ver tareas: {"type":"ver_tareas"}\n\n'
-                '14. Habito: {"type":"habito","content":"nombre del habito"}\n'
-                '   Ej: "hoy hice ejercicio" -> content=ejercicio\n\n'
-                '15. Ver habitos: {"type":"ver_habitos"}\n\n'
-                '16. Rutina: {"type":"ver_rutina","dia":"Lunes|...|null"}\n'
-                '   Ej: "que ejercicios tengo hoy" -> dia segun dia actual, "mostrame la rutina" -> dia=null\n\n'
-                '17. Agregar ejercicio: {"type":"ejercicio","ejercicio":"nombre",'
+                '11. Eliminar gasto: {"type":"eliminar_gasto","descripcion":"texto a buscar"}\n'
+                '    Ej: "borra el gasto del almuerzo" "elimina el gasto de netflix"\n\n'
+                '12. Eliminar ingreso: {"type":"eliminar_ingreso","descripcion":"texto a buscar"}\n'
+                '    Ej: "elimina el ingreso de ayer" "borra el sueldo"\n\n'
+                '13. Nota: {"type":"nota","content":"texto de la nota"}\n\n'
+                '14. Tarea: {"type":"tarea","content":"descripcion de la tarea"}\n\n'
+                '15. Ver tareas: {"type":"ver_tareas"}\n\n'
+                '16. Habito: {"type":"habito","content":"nombre del habito"}\n\n'
+                '17. Ver habitos: {"type":"ver_habitos"}\n\n'
+                '18. Rutina: {"type":"ver_rutina","dia":"Lunes|...|null"}\n\n'
+                '19. Agregar ejercicio: {"type":"ejercicio","ejercicio":"nombre",'
                 '"dia":"Lunes|...","series":0,"reps":"","musculo":""}\n\n'
-                '18. Flashcards: {"type":"flashcards","tema":"tema"}\n'
-                '   Ej: "haceme flashcards de derivadas"\n\n'
-                '19. Quiz: {"type":"quiz","tema":"tema"}\n\n'
-                '20. Resumir: {"type":"resumir","content":"texto"}\n\n'
-                '21. Explicar: {"type":"explicar","content":"concepto"}\n\n'
-                '22. Balance: {"type":"balance"}\n'
-                '   Ej: "cuanta plata tengo" "cual es mi balance" "como estoy de plata"\n\n'
-                '23. Busqueda/noticias: {"type":"busqueda","query":"lo que quiere buscar"}\n'
-                '   Ej: "que esta pasando en argentina" "busca sobre inteligencia artificial"\n'
-                '   "que noticias hay hoy" "quien gano el partido"\n\n'
-                '24. Briefing: {"type":"briefing"}\n'
-                '   Ej: "como viene el dia" "que tengo para hoy"\n\n'
-                '25. Horario/calendario: {"type":"horario","periodo":"hoy|manana|semana|examenes|proxima_clase",'
+                '20. Flashcards: {"type":"flashcards","tema":"tema"}\n\n'
+                '21. Quiz: {"type":"quiz","tema":"tema"}\n\n'
+                '22. Resumir: {"type":"resumir","content":"texto"}\n\n'
+                '23. Explicar: {"type":"explicar","content":"concepto"}\n\n'
+                '24. Balance: {"type":"balance"}\n'
+                '    Ej: "cuanta plata tengo" "cual es mi balance" "como estoy de plata"\n\n'
+                '25. Busqueda/noticias/datos: {"type":"busqueda","query":"lo que quiere buscar"}\n'
+                '    USA ESTE TIPO para: noticias, resultados deportivos, clima, precio del dolar, '
+                '    cualquier hecho del mundo real que pueda haber cambiado recientemente.\n'
+                '    Ej: "quien gano el partido de ayer" "como esta el dolar" "que noticias hay"\n'
+                '    "resultado real madrid" "precio del bitcoin" "que paso con X"\n\n'
+                '26. Horario/calendario (del iCal de la universidad): {"type":"horario",'
+                '"periodo":"hoy|manana|semana|semana_siguiente|examenes|proxima_clase",'
                 '"materia":"nombre o null","pregunta":"pregunta original o null"}\n'
-                '   Ej: "que clases tengo hoy" -> periodo=hoy\n'
-                '   "a que hora es fisica manana" -> periodo=manana, materia=fisica\n'
-                '   "cuando es el proximo parcial" -> periodo=examenes\n'
-                '   "cuando tengo elettrotecnica" -> periodo=proxima_clase, materia=elettrotecnica\n'
-                '   "que horarios tengo esta semana" -> periodo=semana\n'
-                '   "donde es la clase de fisica" -> periodo=proxima_clase, materia=fisica, pregunta=donde es\n\n'
-                '26. Chat general: {"type":"chat"}\n'
-                '   Cuando no encaja en ninguna otra categoria.\n\n'
+                '    Ej: "que clases tengo hoy" -> periodo=hoy\n'
+                '    "horario de la semana que viene" -> periodo=semana_siguiente\n'
+                '    "cuando es el proximo parcial" -> periodo=examenes\n\n'
+                '27. Agregar evento a Apple Calendar: {"type":"apple_evento","titulo":"...",'
+                '"fecha":"YYYY-MM-DD","hora":"HH:MM o null","duracion_min":60,'
+                '"calendario":"nombre del calendario o null","descripcion":""}\n'
+                '    Ej: "agregame al calendario reunion el martes a las 10" '
+                '    "anota en el calendario dentista el 20/4 a las 15"\n\n'
+                '28. Agregar recordatorio a Apple Reminders: {"type":"apple_recordatorio",'
+                '"titulo":"...","lista":"nombre de lista o null","fecha":"YYYY-MM-DD o null"}\n'
+                '    Ej: "agrega a recordatorios llamar al medico" '
+                '    "agrega en da fare comprar leche" "recordatorio en universidad examen fisica"\n\n'
+                '29. Preguntar sobre PDF cargado: {"type":"pdf_pregunta","content":"la pregunta"}\n'
+                '    Ej: "resumi el pdf" "haceme flashcards del pdf" "que dice sobre X en el pdf"\n\n'
+                '30. Briefing: {"type":"briefing"}\n'
+                '    Ej: "como viene el dia" "que tengo para hoy"\n\n'
+                '31. Chat general: {"type":"chat"}\n'
+                '    Cuando no encaja en ninguna otra categoria.\n\n'
                 "IMPORTANTE: Se flexible con el lenguaje. El usuario habla en argentino. "
                 "No necesita usar palabras exactas. Interpreta la intencion."
             )},
             {"role": "user", "content": text},
         ]
         try:
-            r = client.chat.completions.create(
-                model=MODEL, messages=messages,
-                max_tokens=300, temperature=0,
+            r = groq_client.chat.completions.create(
+                model=GROQ_MODEL, messages=messages,
+                max_tokens=400, temperature=0,
             )
             raw = r.choices[0].message.content.strip()
             start = raw.find("{")
@@ -118,23 +133,28 @@ class AIHelper:
     # ── Analisis de fotos (recibos/tickets) ──────────────
 
     def analyze_receipt(self, image_data: bytes, caption: str = "") -> dict | None:
-        """Analiza foto de recibo/ticket y extrae tipo, monto, descripcion, categoria."""
         b64 = base64.b64encode(image_data).decode("utf-8")
         prompt = (
-            "Analiza esta imagen de un recibo, ticket o comprobante. "
-            "Extrae la informacion y responde SOLO con JSON valido:\n"
+            "Analiza esta imagen de un recibo, ticket o comprobante de pago. "
+            "Extrae TODA la informacion visible y responde SOLO con JSON valido:\n"
             '{"tipo": "Gasto|Ingreso", "amount": 0, '
-            '"description": "que es", "category": "categoria"}\n\n'
+            '"description": "descripcion detallada de que se compro", '
+            '"category": "categoria", '
+            '"store": "nombre del local o null", '
+            '"date": "YYYY-MM-DD o null", '
+            '"items": [{"name": "producto", "qty": 1, "price": 0}]}\n\n'
             "Categorias: Comida, Transporte, Entretenimiento, Salud, Educacion, "
             "Alquiler, Servicios, Ropa, Sueldo, Freelance, Regalo, Otros\n\n"
-            "Si no podes leer el monto, pon amount: 0.\n"
+            "En 'description' incluye el nombre del local y los principales productos comprados. "
+            "En 'items' lista cada producto/servicio visible con su precio. "
+            "Si no podes leer el monto total, suma los items. "
             "Si no podes determinar si es gasto o ingreso, asumi Gasto."
         )
         if caption:
             prompt += f"\n\nEl usuario agrego este texto: {caption}"
 
         try:
-            r = client.chat.completions.create(
+            r = groq_client.chat.completions.create(
                 model=VISION_MODEL,
                 messages=[{
                     "role": "user",
@@ -145,7 +165,7 @@ class AIHelper:
                         }},
                     ],
                 }],
-                max_tokens=300,
+                max_tokens=600,
                 temperature=0,
             )
             raw = r.choices[0].message.content.strip()
@@ -160,7 +180,6 @@ class AIHelper:
     # ── Parseo de rutina desde archivo ───────────────────
 
     def parse_routine(self, text: str) -> list[dict] | None:
-        """Parsea un archivo de texto con rutina de gym y devuelve lista de ejercicios."""
         messages = [
             {"role": "system", "content": (
                 "Extrae los ejercicios de esta rutina de gimnasio. "
@@ -176,8 +195,8 @@ class AIHelper:
             {"role": "user", "content": text[:5000]},
         ]
         try:
-            r = client.chat.completions.create(
-                model=MODEL, messages=messages,
+            r = groq_client.chat.completions.create(
+                model=GROQ_MODEL, messages=messages,
                 max_tokens=3000, temperature=0,
             )
             raw = r.choices[0].message.content.strip()
@@ -192,103 +211,153 @@ class AIHelper:
     # ── Busqueda web ───────────────────────────────────────
 
     def web_search(self, query: str) -> str:
-        """Busca en internet y resume los resultados."""
         try:
             from duckduckgo_search import DDGS
+            # Include today's date for time-sensitive queries
+            search_query = query
             with DDGS() as ddgs:
-                results = list(ddgs.text(query, max_results=5))
+                results = list(ddgs.text(search_query, max_results=6))
+
+            # Retry with simplified query if no results
+            if not results:
+                simplified = " ".join(query.split()[:4])
+                with DDGS() as ddgs:
+                    results = list(ddgs.text(simplified, max_results=6))
 
             if not results:
-                return self._ask(
-                    "Responde esta pregunta con tu conocimiento. Espanol argentino.",
+                return self._smart_ask(
+                    f"Responde esta pregunta con tu conocimiento. "
+                    f"Hoy es {TODAY}. Espanol argentino. Da la respuesta directamente.",
                     query,
                 )
 
             context = "\n\n".join(
                 f"**{r['title']}**\n{r['body']}" for r in results
             )
-            return self._ask(
-                "Usa los siguientes resultados de busqueda para responder la pregunta "
-                "del usuario de forma clara y concisa en espanol argentino. "
-                "Si los resultados no son relevantes, responde con tu conocimiento.",
-                f"Pregunta: {query}\n\nResultados:\n{context}",
-                max_tokens=1500,
+            system = (
+                f"Hoy es {TODAY}. "
+                "Usa los resultados de busqueda para responder la pregunta del usuario. "
+                "Da la respuesta directamente y de forma concisa en espanol argentino. "
+                "NUNCA le digas al usuario que busque el mismo. "
+                "NUNCA digas 'no tengo acceso a internet' o similar. "
+                "Si los resultados tienen la informacion, usala. "
+                "Si los resultados no son relevantes, responde con tu conocimiento."
             )
+            return self._smart_ask(system, f"Pregunta: {query}\n\nResultados:\n{context}", max_tokens=1500)
         except ImportError:
-            return self._ask(
-                "Responde esta pregunta con tu conocimiento. Espanol argentino.",
+            return self._smart_ask(
+                f"Responde esta pregunta con tu conocimiento. Hoy es {TODAY}. Espanol argentino.",
                 query,
             )
-        except Exception as e:
-            return self._ask(
-                "Responde esta pregunta con tu conocimiento. Espanol argentino.",
+        except Exception:
+            return self._smart_ask(
+                f"Responde esta pregunta con tu conocimiento. Hoy es {TODAY}. Espanol argentino.",
                 query,
             )
 
-    # ── Estudio ──────────────────────────────────────────
+    # ── Calendario ────────────────────────────────────────
+
+    def answer_calendar_question(self, question: str, calendar_context: str) -> str:
+        return self._smart_ask(
+            f"Hoy es {TODAY}. Sos un asistente que responde preguntas sobre el horario universitario. "
+            "Tenes el calendario completo del estudiante. Responde de forma clara y "
+            "concisa en espanol argentino. Si preguntan por un aula o ubicacion, incluila.\n\n"
+            f"CALENDARIO (formato: fecha hora | tipo | materia | aula):\n{calendar_context}",
+            question,
+            max_tokens=800,
+        )
+
+    # ── Estudio (usa Claude si disponible) ───────────────
 
     def generate_flashcards(self, topic: str) -> str:
-        return self._ask(
+        return self._smart_ask(
             "Genera 5 flashcards sobre el tema. Formato:\n\n"
             "*Flashcard 1*\n*Pregunta:* ...\n*Respuesta:* ...\n\n"
-            "Usa espanol argentino.",
-            f"Tema: {topic}", max_tokens=1500,
+            "Usa espanol argentino. Se preciso y util para estudiar.",
+            f"Tema: {topic}", max_tokens=1800,
         )
 
     def generate_quiz(self, topic: str) -> str:
-        return self._ask(
+        return self._smart_ask(
             "Genera un quiz de 5 preguntas de opcion multiple.\nFormato:\n"
             "*Pregunta 1:* ...\nA) ...\nB) ...\nC) ...\nD) ...\n"
-            "*Respuesta:* ...\n\nUsa espanol argentino.",
-            f"Tema: {topic}", max_tokens=2000,
+            "*Respuesta correcta:* ...\n*Explicacion:* ...\n\nUsa espanol argentino.",
+            f"Tema: {topic}", max_tokens=2500,
         )
 
     def summarize(self, text: str) -> str:
-        return self._ask(
+        return self._smart_ask(
             "Resumi el siguiente texto de forma clara y concisa en espanol "
-            "argentino. Usa bullet points.",
-            text, max_tokens=1000, temperature=0.3,
+            "argentino. Usa bullet points. Captura los puntos clave.",
+            text, max_tokens=1200, temperature=0.3,
         )
 
     def explain(self, concept: str) -> str:
-        return self._ask(
+        return self._smart_ask(
             "Explica el concepto de forma clara y simple, como si le explicaras "
-            "a un estudiante. Usa ejemplos practicos. Espanol argentino.",
-            f"Explicame: {concept}", max_tokens=1500,
+            "a un estudiante universitario. Usa ejemplos practicos y analogias. "
+            "Espanol argentino.",
+            f"Explicame: {concept}", max_tokens=2000,
+        )
+
+    def answer_pdf_question(self, question: str, pdf_text: str) -> str:
+        context = pdf_text[:12000]
+        return self._smart_ask(
+            "El usuario te envio el contenido de un PDF. Responde su pregunta "
+            "basandote en el contenido del documento. Se preciso y cita partes "
+            "relevantes cuando sea util. Espanol argentino.",
+            f"CONTENIDO DEL PDF:\n{context}\n\nPREGUNTA: {question}",
+            max_tokens=2500,
+        )
+
+    def generate_pdf_apunte(self, topic: str, pdf_text: str | None = None) -> str:
+        if pdf_text:
+            context = f"\n\nBASATE EN ESTE DOCUMENTO:\n{pdf_text[:10000]}"
+        else:
+            context = ""
+        return self._smart_ask(
+            "Genera un apunte de estudio completo y bien estructurado sobre el tema. "
+            "Incluye: definiciones clave, conceptos importantes, formulas si aplica, "
+            "ejemplos, y un resumen final. Usa formato con titulos y bullet points. "
+            "Espanol argentino.",
+            f"Tema: {topic}{context}",
+            max_tokens=3000,
         )
 
     # ── Briefing ─────────────────────────────────────────
 
     def generate_briefing(self, tasks: list, habits: list, expenses: list,
-                          clases: list | None = None) -> str:
+                          clases: list | None = None,
+                          schedule_today: list | None = None) -> str:
+        # Format today's schedule compactly
+        schedule_str = ""
+        if schedule_today:
+            schedule_lines = []
+            for s in schedule_today:
+                line = f"  {s['hora_inicio']}-{s['hora_fin']}  {s['materia']}"
+                if s.get("aula"):
+                    line += f"  ({s['aula']})"
+                if s.get("tipo") == "Examen":
+                    line = "  📝 EXAMEN: " + line.strip()
+                schedule_lines.append(line)
+            schedule_str = "\n".join(schedule_lines)
+
         ctx = json.dumps(
             {
+                "clases_hoy_universidad": schedule_str or "Sin clases hoy",
                 "tareas_pendientes": tasks,
-                "clases_pendientes": clases or [],
+                "clases_pendientes_notion": clases or [],
                 "habitos_hoy": habits,
                 "movimientos_hoy": expenses,
             },
             ensure_ascii=False,
         )
-        return self._ask(
+        return self._smart_ask(
             "Genera un briefing matutino amigable y motivador en espanol argentino. "
-            "Resumi clases pendientes de la facultad, tareas, habitos y "
-            "movimientos financieros del dia (gastos e ingresos). Se conciso.",
-            ctx, max_tokens=800,
-        )
-
-    # ── Calendario ───────────────────────────────────────
-
-    def answer_calendar_question(self, question: str, calendar_context: str) -> str:
-        return self._ask(
-            "Sos un asistente que responde preguntas sobre el horario universitario. "
-            "Tenes el calendario completo del estudiante. Responde de forma clara y "
-            "concisa en espanol argentino. Si preguntan por un aula o ubicacion, "
-            "incluila. Usa formato legible con horarios.\n\n"
-            f"CALENDARIO (formato: fecha hora | evento | aula | tipo):\n{calendar_context}",
-            question,
-            max_tokens=800,
-            temperature=0.3,
+            "PRIMERO muestra las clases de hoy de la universidad (materia, hora, aula). "
+            "Luego tareas pendientes, habitos y movimientos financieros. "
+            "Se conciso. No repitas informacion.",
+            ctx, max_tokens=900,
         )
 
     # ── Gastos ───────────────────────────────────────────
@@ -304,8 +373,8 @@ class AIHelper:
             {"role": "user", "content": text},
         ]
         try:
-            r = client.chat.completions.create(
-                model=MODEL, messages=messages,
+            r = groq_client.chat.completions.create(
+                model=GROQ_MODEL, messages=messages,
                 max_tokens=100, temperature=0,
             )
             result = json.loads(r.choices[0].message.content.strip())
@@ -317,7 +386,7 @@ class AIHelper:
 
     def transcribe(self, audio_data: bytes) -> str | None:
         try:
-            transcription = client.audio.transcriptions.create(
+            transcription = groq_client.audio.transcriptions.create(
                 file=("audio.ogg", audio_data),
                 model="whisper-large-v3",
                 language="es",
@@ -327,18 +396,52 @@ class AIHelper:
             print(f"Transcription error: {e}")
             return None
 
-    # ── Utilidad interna ─────────────────────────────────
+    # ── Utilidades internas ──────────────────────────────
 
-    def _ask(self, system: str, user: str, **kwargs) -> str:
+    def _smart_ask(self, system: str, user: str, **kwargs) -> str:
+        """Usa Claude si disponible, sino Groq."""
+        if ANTHROPIC_AVAILABLE:
+            return self._claude_ask(system, user, **kwargs)
+        return self._groq_ask(system, user, **kwargs)
+
+    def _claude_ask(self, system: str, user: str,
+                    history: list | None = None, **kwargs) -> str:
         try:
-            r = client.chat.completions.create(
-                model=MODEL,
+            messages = []
+            if history:
+                messages.extend(history)
+            messages.append({"role": "user", "content": user})
+            r = anthropic_client.messages.create(
+                model=CLAUDE_MODEL,
+                system=system,
+                messages=messages,
+                max_tokens=kwargs.get("max_tokens", 1024),
+            )
+            return r.content[0].text
+        except Exception as e:
+            print(f"Claude error: {e}")
+            return self._groq_ask(system, user, **kwargs)
+
+    def _groq_ask(self, system: str, user: str, **kwargs) -> str:
+        try:
+            r = groq_client.chat.completions.create(
+                model=GROQ_MODEL,
                 messages=[
                     {"role": "system", "content": system},
                     {"role": "user", "content": user},
                 ],
                 max_tokens=kwargs.get("max_tokens", 1024),
                 temperature=kwargs.get("temperature", 0.7),
+            )
+            return r.choices[0].message.content
+        except Exception as e:
+            return f"Error: {e}"
+
+    def _groq_ask_chat(self, messages: list) -> str:
+        try:
+            r = groq_client.chat.completions.create(
+                model=GROQ_MODEL, messages=messages,
+                max_tokens=1024, temperature=0.7,
             )
             return r.choices[0].message.content
         except Exception as e:

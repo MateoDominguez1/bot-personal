@@ -227,6 +227,7 @@ class NotionHelper:
 
             notion.pages.create(parent={"database_id": db_id}, properties=properties)
             emoji = "\U0001f534" if tipo == "Gasto" else "\U0001f7e2"
+            self.update_balance_notion()
             return f"{emoji} {tipo} registrado: ${amount} - {description} [{category}]"
         except Exception as e:
             return f"Error: {e}"
@@ -403,6 +404,108 @@ class NotionHelper:
         except Exception as e:
             return f"Error al calcular balance: {e}"
 
+    def delete_transaction(self, search_term: str, tipo: str | None = None) -> str:
+        """Busca y elimina un gasto o ingreso por descripcion."""
+        db_id = self.life.get("finanzas")
+        if not db_id:
+            return "Primero ejecuta /setup."
+        try:
+            results = notion.databases.query(database_id=db_id)
+            matches = []
+            for item in results.get("results", []):
+                props = item["properties"]
+                desc = props["Concepto"]["title"][0]["plain_text"] if props["Concepto"]["title"] else ""
+                t = props["Tipo"]["select"]["name"] if props["Tipo"].get("select") else ""
+                amt = props["Monto"]["number"] or 0
+                fecha = props["Fecha"]["date"]["start"] if props.get("Fecha", {}).get("date") else ""
+                if search_term.lower() in desc.lower():
+                    if tipo and t.lower() != tipo.lower():
+                        continue
+                    matches.append({"id": item["id"], "desc": desc, "tipo": t, "amount": amt, "fecha": fecha})
+
+            if not matches:
+                return f"No encontre '{search_term}' en tus movimientos."
+            if len(matches) == 1:
+                m = matches[0]
+                notion.pages.update(page_id=m["id"], archived=True)
+                emoji = "\U0001f534" if m["tipo"] == "Gasto" else "\U0001f7e2"
+                return f"{emoji} Eliminado: ${m['amount']} - {m['desc']} ({m['fecha']})"
+            # Multiple matches — list them and ask
+            msg = f"Encontre {len(matches)} movimientos con '{search_term}':\n\n"
+            for i, m in enumerate(matches[:8], 1):
+                emoji = "\U0001f534" if m["tipo"] == "Gasto" else "\U0001f7e2"
+                msg += f"{i}. {emoji} ${m['amount']} - {m['desc']} ({m['fecha']})\n"
+            msg += "\nSe mas especifico: dime el monto o la fecha para eliminar el correcto."
+            return msg
+        except Exception as e:
+            return f"Error: {e}"
+
+    def update_balance_notion(self) -> None:
+        """Actualiza el bloque de balance en la pagina Life de Notion."""
+        try:
+            balance_data = self._compute_balance_raw()
+            balance = balance_data["balance"]
+            # Find the callout block with 💰 on the Life page
+            blocks = notion.blocks.children.list(block_id=LIFE_PAGE_ID)
+            for block in blocks.get("results", []):
+                if block["type"] == "callout":
+                    rich = block["callout"].get("rich_text", [])
+                    text = rich[0]["plain_text"] if rich else ""
+                    if "balance" in text.lower() or "💰" in text or "Balance" in text:
+                        notion.blocks.update(
+                            block_id=block["id"],
+                            callout={
+                                "rich_text": [{"type": "text", "text": {
+                                    "content": f"💰 Balance actual: ${balance:,.2f}\n"
+                                               f"Ingresos: ${balance_data['ingresos']:,.2f} | "
+                                               f"Gastos: ${balance_data['gastos']:,.2f}"
+                                }}],
+                                "icon": {"emoji": "💰"},
+                            },
+                        )
+                        return
+        except Exception as e:
+            print(f"update_balance_notion error: {e}")
+
+    def _compute_balance_raw(self) -> dict:
+        """Devuelve dict con ingresos, gastos, balance del mes."""
+        first_of_month = date.today().replace(day=1).isoformat()
+        fin_db = self.life.get("finanzas")
+        fijos_db = self.life.get("gastos_fijos")
+        ingresos = gastos = fijos_ingresos = fijos_gastos = 0.0
+
+        if fin_db:
+            for item in notion.databases.query(
+                database_id=fin_db,
+                filter={"property": "Fecha", "date": {"on_or_after": first_of_month}},
+            ).get("results", []):
+                props = item["properties"]
+                amt = props["Monto"]["number"] or 0
+                tipo = props["Tipo"]["select"]["name"] if props["Tipo"].get("select") else ""
+                if tipo == "Ingreso":
+                    ingresos += amt
+                else:
+                    gastos += amt
+
+        if fijos_db:
+            for item in notion.databases.query(
+                database_id=fijos_db,
+                filter={"property": "Activo", "checkbox": {"equals": True}},
+            ).get("results", []):
+                props = item["properties"]
+                amt = props["Monto"]["number"] or 0
+                tipo = props["Tipo"]["select"]["name"] if props["Tipo"].get("select") else ""
+                if tipo == "Ingreso":
+                    fijos_ingresos += amt
+                else:
+                    fijos_gastos += amt
+
+        return {
+            "ingresos": ingresos + fijos_ingresos,
+            "gastos": gastos + fijos_gastos,
+            "balance": (ingresos + fijos_ingresos) - (gastos + fijos_gastos),
+        }
+
     # ══════════════════════════════════════════════════════
     #  RUTINA
     # ══════════════════════════════════════════════════════
@@ -514,8 +617,7 @@ class NotionHelper:
 
     def _get_materia_id(self, nombre: str) -> str | None:
         nombre_lower = nombre.lower().strip()
-        if nombre_lower in self._materie_cache:
-            return self._materie_cache[nombre_lower]
+        # Rebuild cache every call (small DB, safe to do)
         try:
             results = notion.databases.query(database_id=self.faculty["materie"])
             for page in results.get("results", []):
@@ -524,12 +626,26 @@ class NotionHelper:
                     continue
                 materia_name = title_parts[0]["plain_text"]
                 self._materie_cache[materia_name.lower().strip()] = page["id"]
-            for cached_name, cached_id in self._materie_cache.items():
-                if nombre_lower in cached_name or cached_name in nombre_lower:
-                    return cached_id
-            return self._materie_cache.get(nombre_lower)
         except Exception:
-            return None
+            pass
+
+        # Exact match first
+        if nombre_lower in self._materie_cache:
+            return self._materie_cache[nombre_lower]
+
+        # Substring match: user input is substring of materia name OR vice versa
+        for cached_name, cached_id in self._materie_cache.items():
+            if nombre_lower in cached_name or cached_name in nombre_lower:
+                return cached_id
+
+        # Word-level partial match: any word of the query appears in the materia name
+        nombre_words = nombre_lower.split()
+        for cached_name, cached_id in self._materie_cache.items():
+            for word in nombre_words:
+                if len(word) >= 3 and word in cached_name:
+                    return cached_id
+
+        return None
 
     def list_materias(self) -> str:
         try:
@@ -560,7 +676,7 @@ class NotionHelper:
             properties = {
                 "Tema": {"title": [{"text": {"content": tema}}]},
                 "Materia": {"relation": [{"id": materia_id}]},
-                "Estado": {"select": {"name": "Clase Pendiente"}},
+                "Estado": {"select": {"name": "Visto en clase"}},
                 "Fecha clase": {"date": {"start": fecha or date.today().isoformat()}},
             }
             if link:

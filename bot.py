@@ -5,8 +5,11 @@ from ai_helper import AIHelper
 from notion_helper import NotionHelper
 from calendar_helper import (
     get_today_schedule, get_tomorrow_schedule, get_week_schedule,
-    get_next_exams, get_next_class, get_schedule_context,
+    get_next_week_schedule, get_next_exams, get_next_class,
+    get_schedule_context, get_today_schedule_for_briefing,
 )
+from apple_helper import AppleHelper
+import pdf_helper
 
 app = Flask(__name__)
 
@@ -15,8 +18,12 @@ TELEGRAM_API = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}"
 
 ai = AIHelper()
 notion = NotionHelper()
+apple = AppleHelper()
 
-conversations = {}
+# Per-chat state
+conversations = {}       # chat_id -> message history
+pdf_sessions = {}        # chat_id -> extracted PDF text
+pending_actions = {}     # chat_id -> {"action": ..., "intent": ...}
 
 
 def send_message(chat_id, text, parse_mode="Markdown"):
@@ -33,6 +40,14 @@ def send_message(chat_id, text, parse_mode="Markdown"):
             "text": text,
             "parse_mode": parse_mode,
         })
+
+
+def send_document(chat_id, file_bytes: bytes, filename: str, caption: str = ""):
+    requests.post(
+        f"{TELEGRAM_API}/sendDocument",
+        data={"chat_id": chat_id, "caption": caption},
+        files={"document": (filename, file_bytes, "application/pdf")},
+    )
 
 
 def send_action(chat_id, action="typing"):
@@ -69,12 +84,10 @@ def set_webhook():
 def handle_message(message):
     chat_id = message["chat"]["id"]
 
-    # Fotos (recibos/tickets)
     if "photo" in message:
         handle_photo(chat_id, message)
         return
 
-    # Documentos/archivos (para importar rutina)
     if "document" in message:
         handle_document(chat_id, message)
         return
@@ -114,11 +127,7 @@ def handle_command(chat_id, text):
 
     elif command == "/clase":
         if not args:
-            send_message(chat_id, (
-                "Usa: /clase materia | tema\n"
-                "Ej: /clase analisi | Limites de funciones\n"
-                "Extra: /clase analisi | Limites | 2026-04-15 | https://link"
-            ))
+            send_message(chat_id, "Ej: /clase analisi | Limites de funciones")
             return
         send_action(chat_id)
         p = [x.strip() for x in args.split("|")]
@@ -135,10 +144,7 @@ def handle_command(chat_id, text):
 
     elif command == "/estado":
         if not args or "|" not in args:
-            send_message(chat_id, (
-                "Usa: /estado tema | nuevo estado\n"
-                "Ej: /estado Limites | Aprendido"
-            ))
+            send_message(chat_id, "Ej: /estado Limites | Aprendido")
             return
         send_action(chat_id)
         p = [x.strip() for x in args.split("|")]
@@ -151,11 +157,13 @@ def handle_command(chat_id, text):
     elif command == "/horario":
         send_action(chat_id)
         arg = args.strip().lower() if args else "hoy"
-        if arg in ("manana", "mañana"):
+        if arg in ("manana", "mañana", "tomorrow"):
             send_message(chat_id, get_tomorrow_schedule())
         elif arg in ("semana", "week"):
             send_message(chat_id, get_week_schedule())
-        elif arg in ("examenes", "parciales"):
+        elif arg in ("semana siguiente", "proxima semana", "next week"):
+            send_message(chat_id, get_next_week_schedule())
+        elif arg in ("examenes", "parciales", "exams"):
             send_message(chat_id, get_next_exams())
         else:
             send_message(chat_id, get_today_schedule())
@@ -164,7 +172,7 @@ def handle_command(chat_id, text):
 
     elif command == "/gasto":
         if not args:
-            send_message(chat_id, "Usa: /gasto monto descripcion [categoria]\nEj: /gasto 500 almuerzo Comida")
+            send_message(chat_id, "Ej: /gasto 500 almuerzo Comida")
             return
         send_action(chat_id)
         amount, desc, cat = _parse_finance_args(args)
@@ -177,7 +185,7 @@ def handle_command(chat_id, text):
 
     elif command == "/ingreso":
         if not args:
-            send_message(chat_id, "Usa: /ingreso monto descripcion [categoria]\nEj: /ingreso 50000 sueldo Sueldo")
+            send_message(chat_id, "Ej: /ingreso 50000 sueldo Sueldo")
             return
         send_action(chat_id)
         amount, desc, cat = _parse_finance_args(args)
@@ -191,8 +199,7 @@ def handle_command(chat_id, text):
     elif command == "/fijo":
         if not args:
             send_message(chat_id, (
-                "Usa: /fijo monto | descripcion | tipo | categoria | dia\n"
-                "Ej: /fijo 500 | Netflix | Gasto | Suscripciones | 15\n"
+                "Ej: /fijo 500 | Netflix | Gasto | Servicios | 15\n"
                 "Ej: /fijo 50000 | Sueldo | Ingreso | Sueldo | 1"
             ))
             return
@@ -232,14 +239,14 @@ def handle_command(chat_id, text):
 
     elif command == "/nota":
         if not args:
-            send_message(chat_id, "Usa: /nota tu nota")
+            send_message(chat_id, "Ej: /nota llamar al medico manana")
             return
         send_action(chat_id)
         send_message(chat_id, notion.add_note(args))
 
     elif command == "/tarea":
         if not args:
-            send_message(chat_id, "Usa: /tarea descripcion")
+            send_message(chat_id, "Ej: /tarea entregar TP de fisica")
             return
         send_action(chat_id)
         send_message(chat_id, notion.add_task(args))
@@ -250,7 +257,7 @@ def handle_command(chat_id, text):
 
     elif command == "/habito":
         if not args:
-            send_message(chat_id, "Usa: /habito nombre\nEj: /habito ejercicio")
+            send_message(chat_id, "Ej: /habito ejercicio")
             return
         send_action(chat_id)
         send_message(chat_id, notion.track_habit(args))
@@ -268,10 +275,7 @@ def handle_command(chat_id, text):
 
     elif command == "/ejercicio":
         if not args:
-            send_message(chat_id, (
-                "Usa: /ejercicio nombre | dia | series | reps | musculo\n"
-                "Ej: /ejercicio Press banca | Lunes | 4 | 10 | Pecho"
-            ))
+            send_message(chat_id, "Ej: /ejercicio Press banca | Lunes | 4 | 10 | Pecho")
             return
         send_action(chat_id)
         p = [x.strip() for x in args.split("|")]
@@ -287,39 +291,35 @@ def handle_command(chat_id, text):
 
     elif command == "/flashcards":
         if not args:
-            send_message(chat_id, "Usa: /flashcards tema")
+            send_message(chat_id, "Ej: /flashcards derivadas")
             return
         send_action(chat_id)
         send_message(chat_id, ai.generate_flashcards(args))
 
     elif command == "/quiz":
         if not args:
-            send_message(chat_id, "Usa: /quiz tema")
+            send_message(chat_id, "Ej: /quiz integrales")
             return
         send_action(chat_id)
         send_message(chat_id, ai.generate_quiz(args))
 
     elif command == "/resumir":
         if not args:
-            send_message(chat_id, "Usa: /resumir texto")
+            send_message(chat_id, "Ej: /resumir [texto]")
             return
         send_action(chat_id)
         send_message(chat_id, ai.summarize(args))
 
     elif command == "/explicar":
         if not args:
-            send_message(chat_id, "Usa: /explicar concepto")
+            send_message(chat_id, "Ej: /explicar transformada de Fourier")
             return
         send_action(chat_id)
         send_message(chat_id, ai.explain(args))
 
     elif command == "/briefing":
         send_action(chat_id)
-        tasks = notion.get_pending_tasks_raw()
-        clases = notion.get_pending_clases_raw()
-        habits = notion.get_today_habits_raw()
-        expenses = notion.get_today_expenses_raw()
-        send_message(chat_id, ai.generate_briefing(tasks, habits, expenses, clases))
+        _send_briefing(chat_id)
 
     else:
         send_message(chat_id, "Comando no reconocido. Usa /start para ver los comandos.")
@@ -333,7 +333,6 @@ def _parse_finance_args(args: str):
     except (ValueError, IndexError):
         return None, None, None
 
-    # Categorias conocidas
     categories = [
         "Comida", "Transporte", "Entretenimiento", "Salud", "Educacion",
         "Alquiler", "Servicios", "Ropa", "Sueldo", "Freelance", "Regalo", "Otros",
@@ -341,7 +340,6 @@ def _parse_finance_args(args: str):
     cat = "Otros"
     desc_parts = parts[1:]
 
-    # Si la ultima palabra es una categoria
     if desc_parts and desc_parts[-1].capitalize() in categories:
         cat = desc_parts[-1].capitalize()
         desc_parts = desc_parts[:-1]
@@ -353,10 +351,8 @@ def _parse_finance_args(args: str):
 # ── Fotos (recibos/tickets) ─────────────────────────────
 
 def handle_photo(chat_id, message):
-    """Recibe una foto, la analiza con IA y registra gasto/ingreso."""
     send_action(chat_id)
 
-    # Tomar la foto de mayor resolucion
     photo = message["photo"][-1]
     file_info = requests.get(
         f"{TELEGRAM_API}/getFile", params={"file_id": photo["file_id"]}
@@ -364,10 +360,8 @@ def handle_photo(chat_id, message):
     file_path = file_info["result"]["file_path"]
     file_url = f"https://api.telegram.org/file/bot{TELEGRAM_TOKEN}/{file_path}"
     image_data = requests.get(file_url).content
-
     caption = message.get("caption", "")
 
-    # Analizar con IA
     result = ai.analyze_receipt(image_data, caption)
 
     if not result:
@@ -376,25 +370,45 @@ def handle_photo(chat_id, message):
 
     tipo = result.get("tipo", "Gasto")
     amount = result.get("amount", 0)
-    desc = result.get("description", "Sin descripcion")
+    store = result.get("store", "")
+    items = result.get("items", [])
     cat = result.get("category", "Otros")
+
+    # Build rich description
+    if store and items:
+        items_str = ", ".join(f"{it['name']}" + (f" ${it['price']}" if it.get("price") else "")
+                               for it in items[:8])
+        desc = f"{store}: {items_str}"
+    elif store:
+        desc = store
+    else:
+        desc = result.get("description", "Sin descripcion")
+
+    # Notes with full item detail
+    notes = ""
+    if items:
+        notes = "\n".join(
+            f"- {it.get('name','?')}: ${it.get('price', '?')}" for it in items
+        )
 
     if amount <= 0:
         send_message(chat_id, f"Detecte: {desc}\nPero no pude leer el monto. Usa:\n/gasto [monto] {desc}")
         return
 
-    response = notion.add_transaction(amount, desc, tipo, cat)
-    send_message(chat_id, f"Foto analizada:\n{response}")
+    response = notion.add_transaction(amount, desc, tipo, cat, notes)
+    emoji = "🔴" if tipo == "Gasto" else "🟢"
+    detail = f"\n*Detalle:*\n{notes}" if notes else ""
+    send_message(chat_id, f"Foto analizada {emoji}\n{response}{detail}")
 
 
-# ── Documentos (importar rutina) ────────────────────────
+# ── Documentos (PDF, rutina, etc.) ──────────────────────
 
 def handle_document(chat_id, message):
-    """Recibe un archivo y lo procesa (rutina, etc)."""
     send_action(chat_id)
 
     doc = message["document"]
     file_name = doc.get("file_name", "").lower()
+    mime_type = doc.get("mime_type", "")
 
     file_info = requests.get(
         f"{TELEGRAM_API}/getFile", params={"file_id": doc["file_id"]}
@@ -402,33 +416,61 @@ def handle_document(chat_id, message):
     file_path = file_info["result"]["file_path"]
     file_url = f"https://api.telegram.org/file/bot{TELEGRAM_TOKEN}/{file_path}"
     file_data = requests.get(file_url).content
-
     caption = message.get("caption", "").lower()
 
-    # Detectar si es una rutina
+    # ── PDF ──────────────────────────────────────────
+    if file_name.endswith(".pdf") or mime_type == "application/pdf":
+        text, pages = pdf_helper.extract_text(file_data)
+        if not text.strip():
+            send_message(chat_id, "No pude extraer texto del PDF. Puede ser que sea un PDF escaneado.")
+            return
+        pdf_sessions[chat_id] = text
+        send_message(chat_id, (
+            f"PDF recibido ({pages} paginas) 📄\n\n"
+            "¿Que querés hacer?\n"
+            "- _\"resumi el pdf\"_\n"
+            "- _\"haceme flashcards del pdf\"_\n"
+            "- _\"haceme un quiz del pdf\"_\n"
+            "- _\"haceme un apunte en PDF\"_\n"
+            "- O preguntame algo sobre el contenido"
+        ))
+        return
+
+    # ── Rutina de gym ────────────────────────────────
     if "rutina" in caption or "gym" in caption or "ejercicio" in caption or "rutina" in file_name:
-        text_content = file_data.decode("utf-8", errors="replace")
-        exercises = ai.parse_routine(text_content)
-        if exercises:
-            result = notion.add_routine_bulk(exercises)
-            send_message(chat_id, result)
-        else:
-            send_message(chat_id, "No pude extraer ejercicios del archivo. Verifica el formato.")
-    else:
-        # Intentar leer como texto y resumir
         try:
             text_content = file_data.decode("utf-8", errors="replace")
-            if len(text_content) > 100:
-                summary = ai.summarize(text_content[:5000])
-                send_message(chat_id, f"*Resumen del archivo:*\n\n{summary}")
+            exercises = ai.parse_routine(text_content)
+            if exercises:
+                send_message(chat_id, notion.add_routine_bulk(exercises))
             else:
-                send_message(chat_id, "Archivo recibido pero no pude procesarlo. Agrega un caption como 'rutina' si es tu rutina de gym.")
+                send_message(chat_id, "No pude extraer ejercicios del archivo. Verifica el formato.")
         except Exception:
-            send_message(chat_id, "No pude leer el archivo. Si es tu rutina, agrega 'rutina' como caption.")
+            send_message(chat_id, "No pude leer el archivo.")
+        return
+
+    # ── Texto generico ───────────────────────────────
+    try:
+        text_content = file_data.decode("utf-8", errors="replace")
+        if len(text_content) > 100:
+            pdf_sessions[chat_id] = text_content
+            summary = ai.summarize(text_content[:5000])
+            send_message(chat_id, f"*Resumen del archivo:*\n\n{summary}")
+        else:
+            send_message(chat_id, "Archivo recibido pero muy corto. Agrega 'rutina' como caption si es tu rutina de gym.")
+    except Exception:
+        send_message(chat_id, "No pude leer el archivo.")
 
 
 def handle_text(chat_id, text):
     send_action(chat_id)
+
+    # ── Resolver accion pendiente (seleccion de calendario/lista) ──
+    if chat_id in pending_actions:
+        pending = pending_actions.pop(chat_id)
+        _resolve_pending(chat_id, text, pending)
+        return
+
     intent = ai.classify_intent(text)
     t = intent.get("type", "chat")
 
@@ -472,6 +514,12 @@ def handle_text(chat_id, text):
         send_message(chat_id, notion.list_finances(intent.get("periodo", "today")))
     elif t == "ver_fijos":
         send_message(chat_id, notion.list_fixed())
+    elif t == "balance":
+        send_message(chat_id, notion.get_balance())
+    elif t == "eliminar_gasto":
+        send_message(chat_id, notion.delete_transaction(intent.get("descripcion", text), "Gasto"))
+    elif t == "eliminar_ingreso":
+        send_message(chat_id, notion.delete_transaction(intent.get("descripcion", text), "Ingreso"))
 
     # ── Personal ─────────────────────────────────────
     elif t == "nota":
@@ -507,27 +555,40 @@ def handle_text(chat_id, text):
     elif t == "explicar":
         send_message(chat_id, ai.explain(intent.get("content", text)))
     elif t == "briefing":
-        tasks = notion.get_pending_tasks_raw()
-        clases = notion.get_pending_clases_raw()
-        habits = notion.get_today_habits_raw()
-        expenses = notion.get_today_expenses_raw()
-        send_message(chat_id, ai.generate_briefing(tasks, habits, expenses, clases))
+        _send_briefing(chat_id)
 
-    # ── Balance ───────────────────────────────────────
-    elif t == "balance":
-        send_message(chat_id, notion.get_balance())
+    # ── PDF ──────────────────────────────────────────
+    elif t == "pdf_pregunta":
+        pdf_text = pdf_sessions.get(chat_id, "")
+        question = intent.get("content", text)
+        if not pdf_text:
+            # No PDF loaded — treat as study question
+            send_message(chat_id, "No tenes ningun PDF cargado. Mandame un PDF primero.")
+            return
+        q_lower = question.lower()
+        if any(w in q_lower for w in ("resumi", "resumen", "resume")):
+            send_message(chat_id, ai.summarize(pdf_text[:8000]))
+        elif any(w in q_lower for w in ("flashcard", "tarjeta")):
+            send_message(chat_id, ai.generate_flashcards(f"el siguiente texto:\n{pdf_text[:4000]}"))
+        elif any(w in q_lower for w in ("quiz", "pregunta")):
+            send_message(chat_id, ai.generate_quiz(f"el siguiente texto:\n{pdf_text[:4000]}"))
+        elif any(w in q_lower for w in ("apunte", "apuntes", "pdf")):
+            _send_pdf_apunte(chat_id, question, pdf_text)
+        else:
+            send_message(chat_id, ai.answer_pdf_question(question, pdf_text))
 
     # ── Horario / Calendario ─────────────────────────
     elif t == "horario":
         periodo = intent.get("periodo", "hoy")
         materia = intent.get("materia")
-        pregunta = intent.get("pregunta")
         if periodo == "hoy":
             send_message(chat_id, get_today_schedule())
         elif periodo == "manana":
             send_message(chat_id, get_tomorrow_schedule())
         elif periodo == "semana":
             send_message(chat_id, get_week_schedule())
+        elif periodo == "semana_siguiente":
+            send_message(chat_id, get_next_week_schedule())
         elif periodo == "examenes":
             send_message(chat_id, get_next_exams())
         elif periodo == "proxima_clase":
@@ -536,12 +597,42 @@ def handle_text(chat_id, text):
             ctx = get_schedule_context()
             send_message(chat_id, ai.answer_calendar_question(text, ctx))
 
+    # ── Apple Calendar ───────────────────────────────
+    elif t == "apple_evento":
+        result = apple.add_calendar_event(
+            titulo=intent.get("titulo", text),
+            fecha=intent.get("fecha", ""),
+            hora=intent.get("hora"),
+            duracion_min=intent.get("duracion_min", 60),
+            calendario=intent.get("calendario"),
+            descripcion=intent.get("descripcion", ""),
+        )
+        _handle_apple_result(chat_id, result, intent, "apple_evento")
+
+    elif t == "apple_recordatorio":
+        result = apple.add_reminder(
+            titulo=intent.get("titulo", text),
+            lista=intent.get("lista"),
+            fecha=intent.get("fecha"),
+        )
+        _handle_apple_result(chat_id, result, intent, "apple_recordatorio")
+        # Also add to Notion tasks
+        if result.get("ok"):
+            notion.add_task(intent.get("titulo", text))
+
     # ── Busqueda web / noticias ──────────────────────
     elif t == "busqueda":
         send_message(chat_id, ai.web_search(intent.get("query", text)))
 
     # ── Chat general ─────────────────────────────────
     else:
+        # Check if text is PDF-related and there's a PDF loaded
+        pdf_text = pdf_sessions.get(chat_id, "")
+        text_lower = text.lower()
+        if pdf_text and any(w in text_lower for w in ("pdf", "documento", "archivo", "texto")):
+            send_message(chat_id, ai.answer_pdf_question(text, pdf_text))
+            return
+
         if chat_id not in conversations:
             conversations[chat_id] = []
         history = conversations[chat_id]
@@ -551,6 +642,98 @@ def handle_text(chat_id, text):
         conversations[chat_id] = history[-20:]
         send_message(chat_id, response)
 
+
+def _handle_apple_result(chat_id, result: dict, intent: dict, action_type: str):
+    """Handles Apple Calendar/Reminders result, asking for selection if needed."""
+    if result.get("ok"):
+        send_message(chat_id, result["msg"])
+    elif result.get("needs_selection"):
+        options = result["options"]
+        msg = result.get("message", "¿Donde lo agrego?") + "\n\n"
+        msg += "\n".join(f"{i+1}. {opt}" for i, opt in enumerate(options))
+        msg += "\n\nResponde con el numero o el nombre."
+        send_message(chat_id, msg)
+        pending_actions[chat_id] = {
+            "action": action_type,
+            "intent": intent,
+            "options": options,
+        }
+    elif result.get("error"):
+        send_message(chat_id, f"Error: {result['error']}")
+
+
+def _resolve_pending(chat_id, text: str, pending: dict):
+    """Resolves a pending Apple Calendar/Reminders selection."""
+    options = pending["options"]
+    intent = pending["intent"]
+    action = pending["action"]
+
+    # Try to match by number or name
+    selected = None
+    text_stripped = text.strip()
+    if text_stripped.isdigit():
+        idx = int(text_stripped) - 1
+        if 0 <= idx < len(options):
+            selected = options[idx]
+    else:
+        # Fuzzy match from apple_helper
+        from apple_helper import _fuzzy_match
+        selected = _fuzzy_match(text_stripped, options)
+
+    if not selected:
+        send_message(chat_id, "No entendi. Responde con el numero de la opcion.")
+        pending_actions[chat_id] = pending  # put it back
+        return
+
+    if action == "apple_evento":
+        intent["calendario"] = selected
+        result = apple.add_calendar_event(
+            titulo=intent.get("titulo", ""),
+            fecha=intent.get("fecha", ""),
+            hora=intent.get("hora"),
+            duracion_min=intent.get("duracion_min", 60),
+            calendario=selected,
+            descripcion=intent.get("descripcion", ""),
+        )
+    else:  # apple_recordatorio
+        intent["lista"] = selected
+        result = apple.add_reminder(
+            titulo=intent.get("titulo", ""),
+            lista=selected,
+            fecha=intent.get("fecha"),
+        )
+        if result.get("ok"):
+            notion.add_task(intent.get("titulo", ""))
+
+    if result.get("ok"):
+        send_message(chat_id, result["msg"])
+    elif result.get("error"):
+        send_message(chat_id, f"Error: {result['error']}")
+
+
+def _send_briefing(chat_id):
+    tasks = notion.get_pending_tasks_raw()
+    clases = notion.get_pending_clases_raw()
+    habits = notion.get_today_habits_raw()
+    expenses = notion.get_today_expenses_raw()
+    schedule = get_today_schedule_for_briefing()
+    send_message(chat_id, ai.generate_briefing(tasks, habits, expenses, clases, schedule))
+
+
+def _send_pdf_apunte(chat_id, topic: str, pdf_text: str | None = None):
+    """Genera un apunte en PDF y lo manda como archivo."""
+    send_action(chat_id, "upload_document")
+    content = ai.generate_pdf_apunte(topic, pdf_text)
+    pdf_bytes = pdf_helper.generate_pdf(topic, content)
+    if pdf_bytes:
+        filename = topic[:40].replace(" ", "_") + ".pdf"
+        send_document(chat_id, pdf_bytes, filename, f"Apunte: {topic}")
+    else:
+        # Fallback: send as text
+        send_message(chat_id, content)
+
+
+# ── Voice ───────────────────────────────────────────────
 
 def handle_voice(chat_id, voice):
     send_action(chat_id)
@@ -563,7 +746,7 @@ def handle_voice(chat_id, voice):
 
     transcription = ai.transcribe(audio_data)
     if not transcription:
-        send_message(chat_id, "No pude entender el audio.")
+        send_message(chat_id, "No pude entender el audio. Intenta de nuevo.")
         return
 
     send_message(chat_id, f"_Transcripcion:_ {transcription}")
@@ -575,12 +758,13 @@ def handle_voice(chat_id, voice):
 WELCOME_MSG = """*Hola! Soy tu asistente personal*
 
 *Facultad*
+/horario - Clases de hoy
+/horario manana|semana|semana siguiente|examenes
 /materias - Ver materias
 /clase materia | tema - Agregar clase
 /clases - Ver clases pendientes
 /estado tema | estado - Cambiar estado
-/examenes - Proximos examenes
-/horario - Clases de hoy (manana/semana/examenes)
+/examenes - Proximos examenes (Notion)
 
 *Finanzas*
 /gasto monto descripcion - Registrar gasto
@@ -589,8 +773,8 @@ WELCOME_MSG = """*Hola! Soy tu asistente personal*
 /fijos - Ver fijos mensuales
 /finanzas - Resumen de hoy
 /finanzas mes - Resumen del mes
-/balance - Cuanta plata tenes
-Tambien podes mandar una FOTO de un ticket!
+/balance - Balance actual
+Podes mandar una FOTO de un ticket!
 
 *Notas y Tareas*
 /nota texto - Guardar nota
@@ -608,6 +792,7 @@ Manda un archivo con caption "rutina" para importar!
 /quiz tema - Quiz
 /resumir texto - Resumir
 /explicar concepto - Explicar
+Manda un PDF para estudiar desde el!
 
 *Habitos*
 /habito nombre - Registrar
@@ -615,9 +800,8 @@ Manda un archivo con caption "rutina" para importar!
 
 *Otros*
 /briefing - Resumen del dia
-Preguntame lo que quieras, busco en internet!
 
-Hablame normal o mandame audios!"""
+Hablame normal, manda audios, fotos o PDFs!"""
 
 
 if __name__ == "__main__":
