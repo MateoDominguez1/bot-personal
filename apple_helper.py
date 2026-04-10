@@ -1,6 +1,6 @@
 import os
-from datetime import datetime, timedelta
-from dateutil import tz
+from datetime import datetime, timedelta, date
+from dateutil import tz, parser as dateutil_parser
 
 try:
     import caldav
@@ -42,6 +42,47 @@ def _get_calendars(principal, cal_type="VEVENT"):
         except Exception:
             continue
     return calendars
+
+
+DAY_NAMES_ES = {
+    "lunes": 0, "martes": 1, "miercoles": 2, "miércoles": 2,
+    "jueves": 3, "viernes": 4, "sabado": 5, "sábado": 5, "domingo": 6,
+}
+
+def _resolve_date(fecha: str) -> str:
+    """Convierte cualquier string de fecha a YYYY-MM-DD. Maneja nombres de dias en español."""
+    if not fecha:
+        return date.today().isoformat()
+
+    # Already ISO format
+    try:
+        datetime.fromisoformat(fecha)
+        return fecha
+    except ValueError:
+        pass
+
+    # Spanish day name -> next occurrence
+    fecha_lower = fecha.lower().strip()
+    if fecha_lower in DAY_NAMES_ES:
+        today = date.today()
+        target_weekday = DAY_NAMES_ES[fecha_lower]
+        days_ahead = (target_weekday - today.weekday()) % 7
+        if days_ahead == 0:
+            days_ahead = 7  # next week if today is that day
+        return (today + timedelta(days=days_ahead)).isoformat()
+
+    # "manana" / "mañana"
+    if fecha_lower in ("manana", "mañana", "tomorrow"):
+        return (date.today() + timedelta(days=1)).isoformat()
+
+    if fecha_lower in ("hoy", "today"):
+        return date.today().isoformat()
+
+    # Try dateutil as fallback
+    try:
+        return dateutil_parser.parse(fecha, dayfirst=True).date().isoformat()
+    except Exception:
+        return date.today().isoformat()
 
 
 def _fuzzy_match(query: str, options: list[str]) -> str | None:
@@ -126,12 +167,13 @@ class AppleHelper:
 
                 # Build the event datetime
                 tz_milan = MILAN_TZ
+                fecha_iso = _resolve_date(fecha)
                 if hora:
                     h, m = map(int, hora.split(":"))
-                    dt_start = datetime.fromisoformat(fecha).replace(
+                    dt_start = datetime.fromisoformat(fecha_iso).replace(
                         hour=h, minute=m, tzinfo=tz_milan)
                 else:
-                    dt_start = datetime.fromisoformat(fecha).replace(
+                    dt_start = datetime.fromisoformat(fecha_iso).replace(
                         hour=9, minute=0, tzinfo=tz_milan)
                 dt_end = dt_start + timedelta(minutes=duracion_min)
 
@@ -146,7 +188,7 @@ class AppleHelper:
                 cal.add_component(event)
 
                 target.save_event(cal.to_ical())
-                return {"ok": True, "msg": f"Evento *{titulo}* agregado al calendario *{target.name}* para el {fecha}" + (f" a las {hora}" if hora else "")}
+                return {"ok": True, "msg": f"Evento *{titulo}* agregado al calendario *{target.name}* para el {fecha_iso}" + (f" a las {hora}" if hora else "")}
         except Exception as e:
             print(f"Apple add_event error: {e}")
             return {"error": f"Error al agregar evento: {e}"}
@@ -187,8 +229,8 @@ class AppleHelper:
                 todo.add("summary", titulo)
                 todo.add("status", "NEEDS-ACTION")
                 if fecha:
-                    from dateutil.parser import parse as parse_date
-                    due = parse_date(fecha).replace(tzinfo=MILAN_TZ)
+                    fecha_iso = _resolve_date(fecha)
+                    due = datetime.fromisoformat(fecha_iso).replace(tzinfo=MILAN_TZ)
                     todo.add("due", due)
                 cal.add_component(todo)
 
