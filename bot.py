@@ -410,23 +410,90 @@ def handle_document(chat_id, message):
 def handle_text(chat_id, text):
     send_action(chat_id)
     intent = ai.classify_intent(text)
+    t = intent.get("type", "chat")
 
-    if intent["type"] == "nota":
+    # ── Facultad ─────────────────────────────────────
+    if t == "clase":
+        send_message(chat_id, notion.add_clase(
+            intent.get("materia", ""),
+            intent.get("tema", text),
+            intent.get("fecha"),
+            intent.get("link"),
+        ))
+    elif t == "ver_clases":
+        send_message(chat_id, notion.list_clases(intent.get("estado")))
+    elif t == "estado_clase":
+        send_message(chat_id, notion.update_clase_estado(
+            intent.get("tema", ""), intent.get("estado", ""),
+        ))
+    elif t == "ver_materias":
+        send_message(chat_id, notion.list_materias())
+    elif t == "ver_examenes":
+        send_message(chat_id, notion.list_examenes())
+
+    # ── Finanzas ─────────────────────────────────────
+    elif t == "gasto":
+        send_message(chat_id, notion.add_transaction(
+            intent.get("amount", 0), intent.get("description", text),
+            "Gasto", intent.get("category", "Otros"),
+        ))
+    elif t == "ingreso":
+        send_message(chat_id, notion.add_transaction(
+            intent.get("amount", 0), intent.get("description", text),
+            "Ingreso", intent.get("category", "Otros"),
+        ))
+    elif t == "fijo":
+        send_message(chat_id, notion.add_fixed(
+            intent.get("amount", 0), intent.get("description", text),
+            intent.get("tipo_fijo", "Gasto"), intent.get("category", "Otros"),
+            intent.get("dia_mes", 1),
+        ))
+    elif t == "ver_finanzas":
+        send_message(chat_id, notion.list_finances(intent.get("periodo", "today")))
+    elif t == "ver_fijos":
+        send_message(chat_id, notion.list_fixed())
+
+    # ── Personal ─────────────────────────────────────
+    elif t == "nota":
         send_message(chat_id, notion.add_note(intent.get("content", text)))
-    elif intent["type"] == "tarea":
+    elif t == "tarea":
         send_message(chat_id, notion.add_task(intent.get("content", text)))
-    elif intent["type"] == "gasto":
-        amt = intent.get("amount", 0)
-        desc = intent.get("description", text)
-        cat = intent.get("category", "Otros")
-        send_message(chat_id, notion.add_transaction(amt, desc, "Gasto", cat))
-    elif intent["type"] == "ingreso":
-        amt = intent.get("amount", 0)
-        desc = intent.get("description", text)
-        cat = intent.get("category", "Otros")
-        send_message(chat_id, notion.add_transaction(amt, desc, "Ingreso", cat))
-    elif intent["type"] == "habito":
+    elif t == "ver_tareas":
+        send_message(chat_id, notion.list_tasks())
+    elif t == "habito":
         send_message(chat_id, notion.track_habit(intent.get("content", text)))
+    elif t == "ver_habitos":
+        send_message(chat_id, notion.list_habits())
+
+    # ── Rutina ───────────────────────────────────────
+    elif t == "ver_rutina":
+        send_message(chat_id, notion.list_routine(intent.get("dia")))
+    elif t == "ejercicio":
+        send_message(chat_id, notion.add_exercise(
+            intent.get("ejercicio", text),
+            intent.get("dia", "Lunes"),
+            intent.get("series", 0),
+            intent.get("reps", ""),
+            intent.get("musculo", ""),
+        ))
+
+    # ── Estudio ──────────────────────────────────────
+    elif t == "flashcards":
+        send_message(chat_id, ai.generate_flashcards(intent.get("tema", text)))
+    elif t == "quiz":
+        send_message(chat_id, ai.generate_quiz(intent.get("tema", text)))
+    elif t == "resumir":
+        send_message(chat_id, ai.summarize(intent.get("content", text)))
+    elif t == "explicar":
+        send_message(chat_id, ai.explain(intent.get("content", text)))
+    elif t == "briefing":
+        tasks = notion.get_pending_tasks_raw()
+        clases = notion.get_pending_clases_raw()
+        habits = notion.get_today_habits_raw()
+        expenses = notion.get_today_expenses_raw()
+        send_message(chat_id, ai.generate_briefing(tasks, habits, expenses, clases))
+
+    # ── Chat general ─────────────────────────────────
     else:
         if chat_id not in conversations:
             conversations[chat_id] = []

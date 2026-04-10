@@ -37,27 +37,61 @@ class AIHelper:
     def classify_intent(self, text: str) -> dict:
         messages = [
             {"role": "system", "content": (
-                "Clasifica el mensaje del usuario en una categoria. "
-                "Responde SOLO con JSON valido:\n"
-                '{"type": "nota|tarea|gasto|ingreso|habito|chat", '
-                '"content": "texto relevante", "amount": 0, '
-                '"description": "", "category": "Otros"}\n\n'
-                "- nota: quiere guardar/anotar algo\n"
-                "- tarea: menciona algo que tiene que hacer\n"
-                "- gasto: menciona un gasto o compra con monto\n"
-                "- ingreso: menciona dinero que recibio/cobro\n"
-                "- habito: dice que hizo/completo un habito\n"
-                "- chat: conversacion general\n\n"
-                "Para gastos/ingresos extrae amount, description y category.\n"
-                "Categorias: Comida, Transporte, Entretenimiento, Salud, Educacion, "
-                "Alquiler, Servicios, Ropa, Sueldo, Freelance, Regalo, Otros"
+                "Sos un clasificador de intenciones. El usuario te habla en lenguaje natural "
+                "y vos tenes que entender que quiere hacer. "
+                "Responde UNICAMENTE con un JSON valido, sin texto adicional.\n\n"
+                "Tipos posibles y sus campos:\n\n"
+                '1. Agregar clase: {"type":"clase","materia":"nombre parcial o completo",'
+                '"tema":"tema de la clase","fecha":"YYYY-MM-DD o null","link":"url o null"}\n'
+                '   Ej: "tuve clase de analisis sobre limites" -> materia=analisi, tema=Limites\n\n'
+                '2. Ver clases: {"type":"ver_clases","estado":"estado o null"}\n'
+                '   Ej: "que clases tengo pendientes" -> estado=Clase Pendiente\n\n'
+                '3. Cambiar estado clase: {"type":"estado_clase","tema":"busqueda parcial",'
+                '"estado":"Clase Pendiente|Estudiando|Aprendido|Visto en clase|Clase pendiente a ver"}\n'
+                '   Ej: "ya aprendi limites" -> tema=limites, estado=Aprendido\n\n'
+                '4. Ver materias: {"type":"ver_materias"}\n\n'
+                '5. Ver examenes: {"type":"ver_examenes"}\n\n'
+                '6. Gasto: {"type":"gasto","amount":0,"description":"","category":"Comida|Transporte|'
+                'Entretenimiento|Salud|Educacion|Alquiler|Servicios|Ropa|Otros"}\n'
+                '   Ej: "gaste 500 en un almuerzo" -> amount=500, desc=almuerzo, cat=Comida\n\n'
+                '7. Ingreso: {"type":"ingreso","amount":0,"description":"","category":"Sueldo|Freelance|Regalo|Otros"}\n'
+                '   Ej: "me pagaron 50000" -> amount=50000, desc=sueldo, cat=Sueldo\n\n'
+                '8. Gasto fijo: {"type":"fijo","amount":0,"description":"","tipo_fijo":"Gasto|Ingreso",'
+                '"category":"","dia_mes":1}\n'
+                '   Ej: "el alquiler es 300 euros el dia 5" -> amount=300, desc=alquiler, tipo_fijo=Gasto, dia_mes=5\n\n'
+                '9. Ver finanzas: {"type":"ver_finanzas","periodo":"today|month"}\n'
+                '   Ej: "cuanto gaste hoy" -> today, "cuanto gaste este mes" -> month\n\n'
+                '10. Ver fijos: {"type":"ver_fijos"}\n\n'
+                '11. Nota: {"type":"nota","content":"texto de la nota"}\n'
+                '   Ej: "anota que tengo que llamar al medico" -> content=llamar al medico\n\n'
+                '12. Tarea: {"type":"tarea","content":"descripcion de la tarea"}\n'
+                '   Ej: "tengo que hacer el tp de fisica" -> content=hacer el tp de fisica\n\n'
+                '13. Ver tareas: {"type":"ver_tareas"}\n\n'
+                '14. Habito: {"type":"habito","content":"nombre del habito"}\n'
+                '   Ej: "hoy hice ejercicio" -> content=ejercicio\n\n'
+                '15. Ver habitos: {"type":"ver_habitos"}\n\n'
+                '16. Rutina: {"type":"ver_rutina","dia":"Lunes|...|null"}\n'
+                '   Ej: "que ejercicios tengo hoy" -> dia segun dia actual, "mostrame la rutina" -> dia=null\n\n'
+                '17. Agregar ejercicio: {"type":"ejercicio","ejercicio":"nombre",'
+                '"dia":"Lunes|...","series":0,"reps":"","musculo":""}\n\n'
+                '18. Flashcards: {"type":"flashcards","tema":"tema"}\n'
+                '   Ej: "haceme flashcards de derivadas"\n\n'
+                '19. Quiz: {"type":"quiz","tema":"tema"}\n\n'
+                '20. Resumir: {"type":"resumir","content":"texto"}\n\n'
+                '21. Explicar: {"type":"explicar","content":"concepto"}\n\n'
+                '22. Briefing: {"type":"briefing"}\n'
+                '   Ej: "como viene el dia" "que tengo para hoy"\n\n'
+                '23. Chat general: {"type":"chat"}\n'
+                '   Cuando no encaja en ninguna otra categoria.\n\n'
+                "IMPORTANTE: Se flexible con el lenguaje. El usuario habla en argentino. "
+                "No necesita usar palabras exactas. Interpreta la intencion."
             )},
             {"role": "user", "content": text},
         ]
         try:
             r = client.chat.completions.create(
                 model=MODEL, messages=messages,
-                max_tokens=200, temperature=0,
+                max_tokens=300, temperature=0,
             )
             raw = r.choices[0].message.content.strip()
             start = raw.find("{")
