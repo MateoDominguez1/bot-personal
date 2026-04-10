@@ -16,49 +16,21 @@ FACULTY_DBS = {
 }
 
 
+LIFE_DBS = {
+    "finanzas": "9714bf74-5e96-47d0-83f2-c779768a8c2d",
+    "gastos_fijos": "aab98c2c-ff67-476e-8183-85f14ae5d8c8",
+    "notas": "2571581b-1f36-4b4f-9efc-b5e5ae34d481",
+    "tareas": "336c9e65-dad2-46dd-9668-1c3292741714",
+    "habitos": "7c7d53cf-168c-4eec-88d1-cb352d42da67",
+    "rutina": "1971262a-849f-4b40-b3f9-cdfdd65d9685",
+}
+
+
 class NotionHelper:
     def __init__(self):
         self.faculty = FACULTY_DBS.copy()
-        # DBs personales en pagina Life (se descubren o crean con /setup)
-        self.life: dict[str, str | None] = {
-            "finanzas": None,
-            "gastos_fijos": None,
-            "notas": None,
-            "tareas": None,
-            "habitos": None,
-            "rutina": None,
-        }
+        self.life: dict[str, str | None] = LIFE_DBS.copy()
         self._materie_cache: dict[str, str] = {}
-        self._discover_life_dbs()
-
-    def _discover_life_dbs(self):
-        try:
-            results = notion.search(
-                filter={"property": "object", "value": "database"}
-            ).get("results", [])
-            name_map = {
-                "Finanzas": "finanzas",
-                "Gastos Fijos": "gastos_fijos",
-                "Notas": "notas",
-                "Tareas": "tareas",
-                "Habitos": "habitos",
-                "Rutina": "rutina",
-            }
-            for db in results:
-                title_parts = db.get("title", [])
-                if not title_parts:
-                    continue
-                raw = title_parts[0].get("plain_text", "").strip()
-                # Quitar emojis comunes del inicio
-                clean = raw
-                for prefix in ["\U0001f4b0 ", "\U0001f4dd ", "\u2705 ", "\U0001f3c3 ",
-                               "\U0001f4b3 ", "\U0001f4aa ", "\U0001f4c5 "]:
-                    clean = clean.removeprefix(prefix)
-                clean = clean.strip()
-                if clean in name_map and not self.life.get(name_map[clean]):
-                    self.life[name_map[clean]] = db["id"]
-        except Exception:
-            pass
 
     # ══════════════════════════════════════════════════════
     #  SETUP - Crear DBs en pagina Life
