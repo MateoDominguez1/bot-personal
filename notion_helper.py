@@ -4,65 +4,485 @@ from notion_client import Client
 
 notion = Client(auth=os.environ.get("NOTION_TOKEN"))
 
-# ── IDs de bases de datos existentes (Politecnico di Milano) ─────
+# ── Paginas principales ──────────────────────────────────
+LIFE_PAGE_ID = "2a2c41af-d85a-8020-b2a9-fae9a0d21271"
+POLIMI_PAGE_ID = "295c41af-d85a-8015-842c-d23a11302460"
+
+# ── IDs de bases de datos de la facultad (ya existen) ────
 FACULTY_DBS = {
     "materie": "295c41af-d85a-80a5-8f87-c1fe893d93ba",
     "lezioni": "296c41af-d85a-8010-8721-c450a1993d5e",
     "esami": "295c41af-d85a-80c1-89ad-c9860e116b0f",
 }
 
-# Nombres para auto-descubrimiento de DBs personales
-PERSONAL_DB_NAMES = {
-    "notas": "Notas",
-    "tareas": "Tareas",
-    "gastos": "Gastos",
-    "habitos": "Habitos",
-}
-
 
 class NotionHelper:
     def __init__(self):
         self.faculty = FACULTY_DBS.copy()
-        self.personal: dict[str, str | None] = {
-            "notas": os.environ.get("NOTION_DB_NOTAS"),
-            "tareas": os.environ.get("NOTION_DB_TAREAS"),
-            "gastos": os.environ.get("NOTION_DB_GASTOS"),
-            "habitos": os.environ.get("NOTION_DB_HABITOS"),
+        # DBs personales en pagina Life (se descubren o crean con /setup)
+        self.life: dict[str, str | None] = {
+            "finanzas": None,
+            "gastos_fijos": None,
+            "notas": None,
+            "tareas": None,
+            "habitos": None,
+            "rutina": None,
         }
-        self._discover_personal_dbs()
-        # Cache de materias: nombre -> page_id
         self._materie_cache: dict[str, str] = {}
+        self._discover_life_dbs()
 
-    def _discover_personal_dbs(self):
+    def _discover_life_dbs(self):
         try:
             results = notion.search(
                 filter={"property": "object", "value": "database"}
             ).get("results", [])
+            name_map = {
+                "Finanzas": "finanzas",
+                "Gastos Fijos": "gastos_fijos",
+                "Notas": "notas",
+                "Tareas": "tareas",
+                "Habitos": "habitos",
+                "Rutina": "rutina",
+            }
             for db in results:
                 title_parts = db.get("title", [])
                 if not title_parts:
                     continue
-                title = title_parts[0].get("plain_text", "").strip()
-                clean = title.replace("\U0001f4dd ", "").replace("\u2705 ", "") \
-                             .replace("\U0001f4b0 ", "").replace("\U0001f3c3 ", "").strip()
-                for key, name in PERSONAL_DB_NAMES.items():
-                    if clean == name and not self.personal.get(key):
-                        self.personal[key] = db["id"]
+                raw = title_parts[0].get("plain_text", "").strip()
+                # Quitar emojis comunes del inicio
+                clean = raw
+                for prefix in ["\U0001f4b0 ", "\U0001f4dd ", "\u2705 ", "\U0001f3c3 ",
+                               "\U0001f4b3 ", "\U0001f4aa ", "\U0001f4c5 "]:
+                    clean = clean.removeprefix(prefix)
+                clean = clean.strip()
+                if clean in name_map and not self.life.get(name_map[clean]):
+                    self.life[name_map[clean]] = db["id"]
         except Exception:
             pass
+
+    # ══════════════════════════════════════════════════════
+    #  SETUP - Crear DBs en pagina Life
+    # ══════════════════════════════════════════════════════
+
+    def setup_databases(self) -> str:
+        try:
+            created = []
+
+            # ── Finanzas (gastos + ingresos) ─────────────
+            if not self.life.get("finanzas"):
+                db = notion.databases.create(
+                    parent={"type": "page_id", "page_id": LIFE_PAGE_ID},
+                    title=[{"type": "text", "text": {"content": "\U0001f4b0 Finanzas"}}],
+                    properties={
+                        "Concepto": {"title": {}},
+                        "Monto": {"number": {"format": "dollar"}},
+                        "Tipo": {"select": {"options": [
+                            {"name": "Gasto", "color": "red"},
+                            {"name": "Ingreso", "color": "green"},
+                        ]}},
+                        "Categoria": {"select": {"options": [
+                            {"name": "Comida", "color": "orange"},
+                            {"name": "Transporte", "color": "blue"},
+                            {"name": "Entretenimiento", "color": "purple"},
+                            {"name": "Salud", "color": "green"},
+                            {"name": "Educacion", "color": "yellow"},
+                            {"name": "Alquiler", "color": "brown"},
+                            {"name": "Servicios", "color": "pink"},
+                            {"name": "Ropa", "color": "default"},
+                            {"name": "Sueldo", "color": "green"},
+                            {"name": "Freelance", "color": "blue"},
+                            {"name": "Regalo", "color": "purple"},
+                            {"name": "Otros", "color": "gray"},
+                        ]}},
+                        "Fecha": {"date": {}},
+                        "Es fijo": {"checkbox": {}},
+                        "Notas": {"rich_text": {}},
+                    },
+                )
+                self.life["finanzas"] = db["id"]
+                created.append("Finanzas")
+
+            # ── Gastos Fijos (mensuales) ─────────────────
+            if not self.life.get("gastos_fijos"):
+                db = notion.databases.create(
+                    parent={"type": "page_id", "page_id": LIFE_PAGE_ID},
+                    title=[{"type": "text", "text": {"content": "\U0001f4c5 Gastos Fijos"}}],
+                    properties={
+                        "Concepto": {"title": {}},
+                        "Monto": {"number": {"format": "dollar"}},
+                        "Tipo": {"select": {"options": [
+                            {"name": "Gasto", "color": "red"},
+                            {"name": "Ingreso", "color": "green"},
+                        ]}},
+                        "Categoria": {"select": {"options": [
+                            {"name": "Alquiler", "color": "brown"},
+                            {"name": "Servicios", "color": "pink"},
+                            {"name": "Transporte", "color": "blue"},
+                            {"name": "Suscripciones", "color": "purple"},
+                            {"name": "Seguro", "color": "yellow"},
+                            {"name": "Sueldo", "color": "green"},
+                            {"name": "Otros", "color": "gray"},
+                        ]}},
+                        "Dia del mes": {"number": {}},
+                        "Activo": {"checkbox": {}},
+                    },
+                )
+                self.life["gastos_fijos"] = db["id"]
+                created.append("Gastos Fijos")
+
+            # ── Notas ────────────────────────────────────
+            if not self.life.get("notas"):
+                db = notion.databases.create(
+                    parent={"type": "page_id", "page_id": LIFE_PAGE_ID},
+                    title=[{"type": "text", "text": {"content": "\U0001f4dd Notas"}}],
+                    properties={
+                        "Nombre": {"title": {}},
+                        "Contenido": {"rich_text": {}},
+                        "Fecha": {"date": {}},
+                        "Tags": {"multi_select": {"options": []}},
+                    },
+                )
+                self.life["notas"] = db["id"]
+                created.append("Notas")
+
+            # ── Tareas ───────────────────────────────────
+            if not self.life.get("tareas"):
+                db = notion.databases.create(
+                    parent={"type": "page_id", "page_id": LIFE_PAGE_ID},
+                    title=[{"type": "text", "text": {"content": "\u2705 Tareas"}}],
+                    properties={
+                        "Tarea": {"title": {}},
+                        "Estado": {"select": {"options": [
+                            {"name": "Pendiente", "color": "red"},
+                            {"name": "En progreso", "color": "yellow"},
+                            {"name": "Completada", "color": "green"},
+                        ]}},
+                        "Prioridad": {"select": {"options": [
+                            {"name": "Alta", "color": "red"},
+                            {"name": "Media", "color": "yellow"},
+                            {"name": "Baja", "color": "blue"},
+                        ]}},
+                        "Fecha": {"date": {}},
+                    },
+                )
+                self.life["tareas"] = db["id"]
+                created.append("Tareas")
+
+            # ── Habitos ──────────────────────────────────
+            if not self.life.get("habitos"):
+                db = notion.databases.create(
+                    parent={"type": "page_id", "page_id": LIFE_PAGE_ID},
+                    title=[{"type": "text", "text": {"content": "\U0001f3c3 Habitos"}}],
+                    properties={
+                        "Habito": {"title": {}},
+                        "Fecha": {"date": {}},
+                        "Completado": {"checkbox": {}},
+                    },
+                )
+                self.life["habitos"] = db["id"]
+                created.append("Habitos")
+
+            # ── Rutina ───────────────────────────────────
+            if not self.life.get("rutina"):
+                db = notion.databases.create(
+                    parent={"type": "page_id", "page_id": LIFE_PAGE_ID},
+                    title=[{"type": "text", "text": {"content": "\U0001f4aa Rutina"}}],
+                    properties={
+                        "Ejercicio": {"title": {}},
+                        "Dia": {"select": {"options": [
+                            {"name": "Lunes", "color": "red"},
+                            {"name": "Martes", "color": "orange"},
+                            {"name": "Miercoles", "color": "yellow"},
+                            {"name": "Jueves", "color": "green"},
+                            {"name": "Viernes", "color": "blue"},
+                            {"name": "Sabado", "color": "purple"},
+                            {"name": "Domingo", "color": "gray"},
+                        ]}},
+                        "Series": {"number": {}},
+                        "Repeticiones": {"rich_text": {}},
+                        "Musculo": {"select": {"options": [
+                            {"name": "Pecho", "color": "red"},
+                            {"name": "Espalda", "color": "blue"},
+                            {"name": "Hombros", "color": "orange"},
+                            {"name": "Biceps", "color": "yellow"},
+                            {"name": "Triceps", "color": "green"},
+                            {"name": "Piernas", "color": "purple"},
+                            {"name": "Abdominales", "color": "pink"},
+                            {"name": "Gluteos", "color": "brown"},
+                            {"name": "Cardio", "color": "gray"},
+                            {"name": "Full body", "color": "default"},
+                        ]}},
+                        "Notas": {"rich_text": {}},
+                    },
+                )
+                self.life["rutina"] = db["id"]
+                created.append("Rutina")
+
+            if created:
+                msg = "*Setup completo!*\n\nCreado en pagina Life:\n"
+                msg += "\n".join(f"- {name}" for name in created)
+                msg += "\n\nFacultad: usa tus DBs existentes."
+                return msg
+            return (
+                "Todo configurado!\n\n"
+                "Life: Finanzas, Gastos Fijos, Notas, Tareas, Habitos, Rutina\n"
+                "Facultad: Materie, Lezioni, Esami"
+            )
+        except Exception as e:
+            return f"Error en setup: {e}"
+
+    # ══════════════════════════════════════════════════════
+    #  FINANZAS - Gastos, Ingresos, Fijos
+    # ══════════════════════════════════════════════════════
+
+    def add_transaction(self, amount: float, description: str,
+                        tipo: str = "Gasto", category: str = "Otros",
+                        notes: str = "") -> str:
+        db_id = self.life.get("finanzas")
+        if not db_id:
+            return "Primero ejecuta /setup."
+        try:
+            properties = {
+                "Concepto": {"title": [{"text": {"content": description}}]},
+                "Monto": {"number": amount},
+                "Tipo": {"select": {"name": tipo}},
+                "Categoria": {"select": {"name": category}},
+                "Fecha": {"date": {"start": date.today().isoformat()}},
+                "Es fijo": {"checkbox": False},
+            }
+            if notes:
+                properties["Notas"] = {"rich_text": [{"text": {"content": notes[:2000]}}]}
+
+            notion.pages.create(parent={"database_id": db_id}, properties=properties)
+            emoji = "\U0001f534" if tipo == "Gasto" else "\U0001f7e2"
+            return f"{emoji} {tipo} registrado: ${amount} - {description} [{category}]"
+        except Exception as e:
+            return f"Error: {e}"
+
+    def add_fixed(self, amount: float, description: str,
+                  tipo: str = "Gasto", category: str = "Otros",
+                  dia_mes: int = 1) -> str:
+        db_id = self.life.get("gastos_fijos")
+        if not db_id:
+            return "Primero ejecuta /setup."
+        try:
+            notion.pages.create(
+                parent={"database_id": db_id},
+                properties={
+                    "Concepto": {"title": [{"text": {"content": description}}]},
+                    "Monto": {"number": amount},
+                    "Tipo": {"select": {"name": tipo}},
+                    "Categoria": {"select": {"name": category}},
+                    "Dia del mes": {"number": dia_mes},
+                    "Activo": {"checkbox": True},
+                },
+            )
+            return f"Fijo registrado: ${amount} - {description} (dia {dia_mes} de cada mes)"
+        except Exception as e:
+            return f"Error: {e}"
+
+    def list_finances(self, period: str = "today") -> str:
+        db_id = self.life.get("finanzas")
+        if not db_id:
+            return "Primero ejecuta /setup."
+        try:
+            today = date.today().isoformat()
+            if period == "today":
+                query_filter = {"property": "Fecha", "date": {"equals": today}}
+                period_label = "hoy"
+            elif period == "month":
+                first_of_month = date.today().replace(day=1).isoformat()
+                query_filter = {"property": "Fecha", "date": {"on_or_after": first_of_month}}
+                period_label = "este mes"
+            else:
+                query_filter = {"property": "Fecha", "date": {"equals": today}}
+                period_label = "hoy"
+
+            results = notion.databases.query(
+                database_id=db_id, filter=query_filter,
+                sorts=[{"property": "Fecha", "direction": "descending"}],
+            )
+            items = results.get("results", [])
+            if not items:
+                return f"No hay movimientos {period_label}."
+
+            gastos_total = 0.0
+            ingresos_total = 0.0
+            msg = f"*Finanzas {period_label}:*\n\n"
+
+            for item in items:
+                props = item["properties"]
+                desc = props["Concepto"]["title"][0]["plain_text"] if props["Concepto"]["title"] else "?"
+                amt = props["Monto"]["number"] or 0
+                tipo = props["Tipo"]["select"]["name"] if props["Tipo"].get("select") else "?"
+                cat = props["Categoria"]["select"]["name"] if props["Categoria"].get("select") else ""
+
+                if tipo == "Gasto":
+                    gastos_total += amt
+                    msg += f"\U0001f534 ${amt} - {desc} [{cat}]\n"
+                else:
+                    ingresos_total += amt
+                    msg += f"\U0001f7e2 ${amt} - {desc} [{cat}]\n"
+
+            balance = ingresos_total - gastos_total
+            msg += f"\n*Ingresos:* ${ingresos_total}"
+            msg += f"\n*Gastos:* ${gastos_total}"
+            msg += f"\n*Balance:* ${balance}"
+            return msg
+        except Exception as e:
+            return f"Error: {e}"
+
+    def list_fixed(self) -> str:
+        db_id = self.life.get("gastos_fijos")
+        if not db_id:
+            return "Primero ejecuta /setup."
+        try:
+            results = notion.databases.query(
+                database_id=db_id,
+                filter={"property": "Activo", "checkbox": {"equals": True}},
+                sorts=[{"property": "Dia del mes", "direction": "ascending"}],
+            )
+            items = results.get("results", [])
+            if not items:
+                return "No hay gastos/ingresos fijos registrados."
+
+            gastos = 0.0
+            ingresos = 0.0
+            msg = "*Fijos mensuales:*\n\n"
+            for item in items:
+                props = item["properties"]
+                desc = props["Concepto"]["title"][0]["plain_text"] if props["Concepto"]["title"] else "?"
+                amt = props["Monto"]["number"] or 0
+                tipo = props["Tipo"]["select"]["name"] if props["Tipo"].get("select") else "?"
+                dia = int(props["Dia del mes"]["number"] or 1)
+
+                if tipo == "Gasto":
+                    gastos += amt
+                    msg += f"\U0001f534 Dia {dia}: ${amt} - {desc}\n"
+                else:
+                    ingresos += amt
+                    msg += f"\U0001f7e2 Dia {dia}: ${amt} - {desc}\n"
+
+            msg += f"\n*Total fijo gastos:* ${gastos}/mes"
+            msg += f"\n*Total fijo ingresos:* ${ingresos}/mes"
+            msg += f"\n*Balance fijo:* ${ingresos - gastos}/mes"
+            return msg
+        except Exception as e:
+            return f"Error: {e}"
+
+    # ══════════════════════════════════════════════════════
+    #  RUTINA
+    # ══════════════════════════════════════════════════════
+
+    def add_exercise(self, ejercicio: str, dia: str, series: int = 0,
+                     reps: str = "", musculo: str = "", notas: str = "") -> str:
+        db_id = self.life.get("rutina")
+        if not db_id:
+            return "Primero ejecuta /setup."
+        try:
+            properties = {
+                "Ejercicio": {"title": [{"text": {"content": ejercicio}}]},
+                "Dia": {"select": {"name": dia}},
+            }
+            if series:
+                properties["Series"] = {"number": series}
+            if reps:
+                properties["Repeticiones"] = {"rich_text": [{"text": {"content": reps}}]}
+            if musculo:
+                properties["Musculo"] = {"select": {"name": musculo}}
+            if notas:
+                properties["Notas"] = {"rich_text": [{"text": {"content": notas}}]}
+
+            notion.pages.create(parent={"database_id": db_id}, properties=properties)
+            return f"Ejercicio agregado: *{ejercicio}* ({dia})"
+        except Exception as e:
+            return f"Error: {e}"
+
+    def add_routine_bulk(self, exercises: list[dict]) -> str:
+        """Agrega multiples ejercicios de una vez (para importar rutina)."""
+        db_id = self.life.get("rutina")
+        if not db_id:
+            return "Primero ejecuta /setup."
+        added = 0
+        errors = 0
+        for ex in exercises:
+            try:
+                properties = {
+                    "Ejercicio": {"title": [{"text": {"content": ex.get("ejercicio", "?")}}]},
+                    "Dia": {"select": {"name": ex.get("dia", "Lunes")}},
+                }
+                if ex.get("series"):
+                    properties["Series"] = {"number": ex["series"]}
+                if ex.get("reps"):
+                    properties["Repeticiones"] = {"rich_text": [{"text": {"content": ex["reps"]}}]}
+                if ex.get("musculo"):
+                    properties["Musculo"] = {"select": {"name": ex["musculo"]}}
+                if ex.get("notas"):
+                    properties["Notas"] = {"rich_text": [{"text": {"content": ex["notas"]}}]}
+
+                notion.pages.create(parent={"database_id": db_id}, properties=properties)
+                added += 1
+            except Exception:
+                errors += 1
+        msg = f"Rutina importada: {added} ejercicios agregados."
+        if errors:
+            msg += f" ({errors} errores)"
+        return msg
+
+    def list_routine(self, dia: str | None = None) -> str:
+        db_id = self.life.get("rutina")
+        if not db_id:
+            return "Primero ejecuta /setup."
+        try:
+            query_filter = None
+            if dia:
+                query_filter = {"property": "Dia", "select": {"equals": dia}}
+            results = notion.databases.query(
+                database_id=db_id,
+                filter=query_filter,
+            )
+            items = results.get("results", [])
+            if not items:
+                return f"No hay ejercicios{'para ' + dia if dia else ''} en la rutina."
+
+            # Agrupar por dia
+            by_day: dict[str, list] = {}
+            for item in items:
+                props = item["properties"]
+                name = props["Ejercicio"]["title"][0]["plain_text"] if props["Ejercicio"]["title"] else "?"
+                d = props["Dia"]["select"]["name"] if props["Dia"].get("select") else "?"
+                series = int(props["Series"]["number"] or 0) if props.get("Series", {}).get("number") else 0
+                reps_parts = props.get("Repeticiones", {}).get("rich_text", [])
+                reps = reps_parts[0]["plain_text"] if reps_parts else ""
+                musculo_sel = props.get("Musculo", {}).get("select")
+                musculo = musculo_sel["name"] if musculo_sel else ""
+
+                detail = f"  - {name}"
+                if series and reps:
+                    detail += f" ({series}x{reps})"
+                elif series:
+                    detail += f" ({series} series)"
+                if musculo:
+                    detail += f" [{musculo}]"
+                by_day.setdefault(d, []).append(detail)
+
+            day_order = ["Lunes", "Martes", "Miercoles", "Jueves", "Viernes", "Sabado", "Domingo"]
+            msg = "*Rutina:*\n\n"
+            for d in day_order:
+                if d in by_day:
+                    msg += f"*{d}:*\n" + "\n".join(by_day[d]) + "\n\n"
+            return msg.strip()
+        except Exception as e:
+            return f"Error: {e}"
 
     # ══════════════════════════════════════════════════════
     #  FACULTAD - Materias, Lecciones, Examenes
     # ══════════════════════════════════════════════════════
 
     def _get_materia_id(self, nombre: str) -> str | None:
-        """Busca una materia por nombre y devuelve su page ID."""
         nombre_lower = nombre.lower().strip()
-
-        # Buscar en cache
         if nombre_lower in self._materie_cache:
             return self._materie_cache[nombre_lower]
-
         try:
             results = notion.databases.query(database_id=self.faculty["materie"])
             for page in results.get("results", []):
@@ -70,10 +490,7 @@ class NotionHelper:
                 if not title_parts:
                     continue
                 materia_name = title_parts[0]["plain_text"]
-                # Guardar en cache
                 self._materie_cache[materia_name.lower().strip()] = page["id"]
-
-            # Buscar coincidencia parcial
             for cached_name, cached_id in self._materie_cache.items():
                 if nombre_lower in cached_name or cached_name in nombre_lower:
                     return cached_id
@@ -87,14 +504,13 @@ class NotionHelper:
             materias = results.get("results", [])
             if not materias:
                 return "No hay materias cargadas."
-
             msg = "*Materias:*\n\n"
             for m in materias:
                 props = m["properties"]
                 nombre = props["Nombre"]["title"][0]["plain_text"] if props["Nombre"]["title"] else "?"
                 profesor = props.get("Profesor", {}).get("rich_text", [])
                 prof_name = profesor[0]["plain_text"] if profesor else "?"
-                year = props.get("Año universitario", {}).get("status", {})
+                year = props.get("Ano universitario", {}).get("status", {})
                 year_name = year.get("name", "?") if year else "?"
                 msg += f"- *{nombre}* - {prof_name} ({year_name})\n"
             return msg
@@ -103,16 +519,11 @@ class NotionHelper:
 
     def add_clase(self, materia: str, tema: str, fecha: str | None = None,
                   link: str | None = None) -> str:
-        """Agrega una leccion a la DB de Lezioni del semestre."""
         try:
             materia_id = self._get_materia_id(materia)
             if not materia_id:
                 materias_list = ", ".join(self._materie_cache.keys()) or "ninguna encontrada"
-                return (
-                    f"No encontre la materia '{materia}'.\n"
-                    f"Materias disponibles: {materias_list}"
-                )
-
+                return f"No encontre la materia '{materia}'.\nDisponibles: {materias_list}"
             properties = {
                 "Tema": {"title": [{"text": {"content": tema}}]},
                 "Materia": {"relation": [{"id": materia_id}]},
@@ -121,7 +532,6 @@ class NotionHelper:
             }
             if link:
                 properties["Link"] = {"url": link}
-
             notion.pages.create(
                 parent={"database_id": self.faculty["lezioni"]},
                 properties=properties,
@@ -131,15 +541,11 @@ class NotionHelper:
             return f"Error al agregar clase: {e}"
 
     def list_clases(self, estado: str | None = None) -> str:
-        """Lista las clases, opcionalmente filtradas por estado."""
         try:
-            query_filter = None
             if estado:
                 query_filter = {"property": "Estado", "select": {"equals": estado}}
             else:
-                # Mostrar solo no terminadas
                 query_filter = {"property": "Terminado", "checkbox": {"equals": False}}
-
             results = notion.databases.query(
                 database_id=self.faculty["lezioni"],
                 filter=query_filter,
@@ -148,21 +554,17 @@ class NotionHelper:
             clases = results.get("results", [])
             if not clases:
                 return "No hay clases pendientes."
-
             estado_emoji = {
-                "Clase Pendiente": "🔴",
-                "Estudiando": "🔵",
-                "Aprendido": "🟢",
-                "Visto en clase": "🟡",
-                "Clase pendiente a ver": "🟤",
+                "Clase Pendiente": "\U0001f534", "Estudiando": "\U0001f535",
+                "Aprendido": "\U0001f7e2", "Visto en clase": "\U0001f7e1",
+                "Clase pendiente a ver": "\U0001f7e4",
             }
-
             msg = "*Clases:*\n\n"
-            for c in clases[:20]:  # Limitar a 20
+            for c in clases[:20]:
                 props = c["properties"]
                 tema = props["Tema"]["title"][0]["plain_text"] if props["Tema"]["title"] else "?"
                 est = props["Estado"]["select"]["name"] if props["Estado"].get("select") else "?"
-                emoji = estado_emoji.get(est, "⚪")
+                emoji = estado_emoji.get(est, "\u26aa")
                 fecha = ""
                 if props.get("Fecha clase", {}).get("date"):
                     fecha = f" ({props['Fecha clase']['date']['start']})"
@@ -172,23 +574,17 @@ class NotionHelper:
             return f"Error: {e}"
 
     def update_clase_estado(self, tema_query: str, nuevo_estado: str) -> str:
-        """Actualiza el estado de una clase buscandola por tema."""
         estados_validos = [
             "Clase Pendiente", "Estudiando", "Aprendido",
             "Visto en clase", "Clase pendiente a ver",
         ]
-        # Buscar coincidencia parcial en estados
         estado_match = None
         for est in estados_validos:
             if nuevo_estado.lower() in est.lower():
                 estado_match = est
                 break
         if not estado_match:
-            return (
-                f"Estado no valido. Opciones:\n"
-                + "\n".join(f"- {e}" for e in estados_validos)
-            )
-
+            return "Estado no valido. Opciones:\n" + "\n".join(f"- {e}" for e in estados_validos)
         try:
             results = notion.databases.query(database_id=self.faculty["lezioni"])
             for page in results.get("results", []):
@@ -201,12 +597,11 @@ class NotionHelper:
                         properties={"Estado": {"select": {"name": estado_match}}},
                     )
                     return f"Estado actualizado: *{tema[0]['plain_text']}* -> {estado_match}"
-            return f"No encontre ninguna clase con '{tema_query}' en el tema."
+            return f"No encontre clase con '{tema_query}' en el tema."
         except Exception as e:
             return f"Error: {e}"
 
     def list_examenes(self) -> str:
-        """Lista los proximos examenes."""
         try:
             results = notion.databases.query(
                 database_id=self.faculty["esami"],
@@ -215,7 +610,6 @@ class NotionHelper:
             exams = results.get("results", [])
             if not exams:
                 return "No hay examenes cargados."
-
             msg = "*Examenes:*\n\n"
             for ex in exams:
                 props = ex["properties"]
@@ -229,81 +623,11 @@ class NotionHelper:
             return f"Error: {e}"
 
     # ══════════════════════════════════════════════════════
-    #  PERSONAL - Notas, Tareas, Gastos, Habitos
+    #  NOTAS, TAREAS, HABITOS (en Life)
     # ══════════════════════════════════════════════════════
 
-    def setup_databases(self) -> str:
-        """Crea las bases de datos personales (no de la facultad)."""
-        try:
-            # Buscar una pagina que NO sea del Politecnico para crear las DBs
-            pages = notion.search(
-                filter={"property": "object", "value": "page"}
-            ).get("results", [])
-
-            if not pages:
-                return (
-                    "No encontre paginas compartidas con la integracion.\n\n"
-                    "1. Crea una pagina en Notion llamada 'Bot Personal'\n"
-                    "2. Click en '...' > 'Connections' > busca tu integracion\n"
-                    "3. Volve a mandar /setup"
-                )
-
-            # Usar la primera pagina disponible
-            parent_id = pages[0]["id"]
-            parent_title = self._get_page_title(pages[0])
-            created = []
-
-            if not self.personal.get("gastos"):
-                db = notion.databases.create(
-                    parent={"type": "page_id", "page_id": parent_id},
-                    title=[{"type": "text", "text": {"content": "\U0001f4b0 Gastos"}}],
-                    properties={
-                        "Descripcion": {"title": {}},
-                        "Monto": {"number": {"format": "dollar"}},
-                        "Categoria": {"select": {"options": [
-                            {"name": "Comida", "color": "orange"},
-                            {"name": "Transporte", "color": "blue"},
-                            {"name": "Entretenimiento", "color": "purple"},
-                            {"name": "Salud", "color": "green"},
-                            {"name": "Educacion", "color": "yellow"},
-                            {"name": "Otros", "color": "gray"},
-                        ]}},
-                        "Fecha": {"date": {}},
-                    },
-                )
-                self.personal["gastos"] = db["id"]
-                created.append("Gastos")
-
-            if not self.personal.get("habitos"):
-                db = notion.databases.create(
-                    parent={"type": "page_id", "page_id": parent_id},
-                    title=[{"type": "text", "text": {"content": "\U0001f3c3 Habitos"}}],
-                    properties={
-                        "Habito": {"title": {}},
-                        "Fecha": {"date": {}},
-                        "Completado": {"checkbox": {}},
-                    },
-                )
-                self.personal["habitos"] = db["id"]
-                created.append("Habitos")
-
-            if created:
-                msg = "*Setup completo!*\n\nBases de datos creadas:\n"
-                msg += "\n".join(f"- {name}" for name in created)
-                msg += "\n\nBases de datos de la facultad detectadas automaticamente."
-                return msg
-            return (
-                "Todo configurado!\n\n"
-                "Facultad: Materie, Lezioni, Esami\n"
-                "Personal: Notas, Tareas, Gastos, Habitos"
-            )
-        except Exception as e:
-            return f"Error en setup: {e}"
-
-    # ── Notas ────────────────────────────────────────────
-
     def add_note(self, content: str) -> str:
-        db_id = self.personal.get("notas")
+        db_id = self.life.get("notas")
         if not db_id:
             return "Primero ejecuta /setup."
         try:
@@ -320,12 +644,10 @@ class NotionHelper:
             )
             return f"Nota guardada: *{title}*"
         except Exception as e:
-            return f"Error al guardar nota: {e}"
-
-    # ── Tareas ───────────────────────────────────────────
+            return f"Error: {e}"
 
     def add_task(self, content: str) -> str:
-        db_id = self.personal.get("tareas")
+        db_id = self.life.get("tareas")
         if not db_id:
             return "Primero ejecuta /setup."
         try:
@@ -343,7 +665,7 @@ class NotionHelper:
             return f"Error: {e}"
 
     def list_tasks(self) -> str:
-        db_id = self.personal.get("tareas")
+        db_id = self.life.get("tareas")
         if not db_id:
             return "Primero ejecuta /setup."
         try:
@@ -358,64 +680,15 @@ class NotionHelper:
             for t in tasks:
                 props = t["properties"]
                 title = props["Tarea"]["title"][0]["plain_text"] if props["Tarea"]["title"] else "?"
-                status = props["Estado"]["select"]["name"] if props["Estado"].get("select") else "?"
                 priority = props["Prioridad"]["select"]["name"] if props["Prioridad"].get("select") else "?"
-                emoji = {"Alta": "🔴", "Media": "🟡", "Baja": "🔵"}.get(priority, "⚪")
-                msg += f"{emoji} {title} [{status}]\n"
+                emoji = {"Alta": "\U0001f534", "Media": "\U0001f7e1", "Baja": "\U0001f535"}.get(priority, "\u26aa")
+                msg += f"{emoji} {title}\n"
             return msg
         except Exception as e:
             return f"Error: {e}"
-
-    # ── Gastos ───────────────────────────────────────────
-
-    def add_expense(self, amount: float, description: str, category: str = "Otros") -> str:
-        db_id = self.personal.get("gastos")
-        if not db_id:
-            return "Primero ejecuta /setup."
-        try:
-            notion.pages.create(
-                parent={"database_id": db_id},
-                properties={
-                    "Descripcion": {"title": [{"text": {"content": description}}]},
-                    "Monto": {"number": amount},
-                    "Categoria": {"select": {"name": category}},
-                    "Fecha": {"date": {"start": date.today().isoformat()}},
-                },
-            )
-            return f"Gasto registrado: ${amount} - {description}"
-        except Exception as e:
-            return f"Error: {e}"
-
-    def list_expenses(self) -> str:
-        db_id = self.personal.get("gastos")
-        if not db_id:
-            return "Primero ejecuta /setup."
-        try:
-            today = date.today().isoformat()
-            results = notion.databases.query(
-                database_id=db_id,
-                filter={"property": "Fecha", "date": {"equals": today}},
-            )
-            expenses = results.get("results", [])
-            if not expenses:
-                return "No registraste gastos hoy."
-            total = 0.0
-            msg = "*Gastos de hoy:*\n\n"
-            for exp in expenses:
-                props = exp["properties"]
-                desc = props["Descripcion"]["title"][0]["plain_text"] if props["Descripcion"]["title"] else "?"
-                amt = props["Monto"]["number"] or 0
-                total += amt
-                msg += f"- ${amt} - {desc}\n"
-            msg += f"\n*Total: ${total}*"
-            return msg
-        except Exception as e:
-            return f"Error: {e}"
-
-    # ── Habitos ──────────────────────────────────────────
 
     def track_habit(self, habit_name: str) -> str:
-        db_id = self.personal.get("habitos")
+        db_id = self.life.get("habitos")
         if not db_id:
             return "Primero ejecuta /setup."
         try:
@@ -432,7 +705,7 @@ class NotionHelper:
             return f"Error: {e}"
 
     def list_habits(self) -> str:
-        db_id = self.personal.get("habitos")
+        db_id = self.life.get("habitos")
         if not db_id:
             return "Primero ejecuta /setup."
         try:
@@ -449,15 +722,17 @@ class NotionHelper:
                 props = h["properties"]
                 name = props["Habito"]["title"][0]["plain_text"] if props["Habito"]["title"] else "?"
                 done = props["Completado"]["checkbox"]
-                msg += f"{'✅' if done else '⬜'} {name}\n"
+                msg += f"{'\u2705' if done else '\u2b1c'} {name}\n"
             return msg
         except Exception as e:
             return f"Error: {e}"
 
-    # ── Datos crudos para briefing ───────────────────────
+    # ══════════════════════════════════════════════════════
+    #  DATOS CRUDOS PARA BRIEFING
+    # ══════════════════════════════════════════════════════
 
     def get_pending_tasks_raw(self) -> list:
-        db_id = self.personal.get("tareas")
+        db_id = self.life.get("tareas")
         if not db_id:
             return []
         try:
@@ -465,11 +740,8 @@ class NotionHelper:
                 database_id=db_id,
                 filter={"property": "Estado", "select": {"does_not_equal": "Completada"}},
             )
-            return [
-                t["properties"]["Tarea"]["title"][0]["plain_text"]
-                for t in results.get("results", [])
-                if t["properties"]["Tarea"]["title"]
-            ]
+            return [t["properties"]["Tarea"]["title"][0]["plain_text"]
+                    for t in results.get("results", []) if t["properties"]["Tarea"]["title"]]
         except Exception:
             return []
 
@@ -479,49 +751,39 @@ class NotionHelper:
                 database_id=self.faculty["lezioni"],
                 filter={"property": "Terminado", "checkbox": {"equals": False}},
             )
-            return [
-                t["properties"]["Tema"]["title"][0]["plain_text"]
-                for t in results.get("results", [])
-                if t["properties"]["Tema"]["title"]
-            ]
+            return [t["properties"]["Tema"]["title"][0]["plain_text"]
+                    for t in results.get("results", []) if t["properties"]["Tema"]["title"]]
         except Exception:
             return []
 
     def get_today_habits_raw(self) -> list:
-        db_id = self.personal.get("habitos")
+        db_id = self.life.get("habitos")
         if not db_id:
             return []
         try:
             today = date.today().isoformat()
             results = notion.databases.query(
-                database_id=db_id,
-                filter={"property": "Fecha", "date": {"equals": today}},
+                database_id=db_id, filter={"property": "Fecha", "date": {"equals": today}},
             )
-            return [
-                h["properties"]["Habito"]["title"][0]["plain_text"]
-                for h in results.get("results", [])
-                if h["properties"]["Habito"]["title"]
-            ]
+            return [h["properties"]["Habito"]["title"][0]["plain_text"]
+                    for h in results.get("results", []) if h["properties"]["Habito"]["title"]]
         except Exception:
             return []
 
     def get_today_expenses_raw(self) -> list:
-        db_id = self.personal.get("gastos")
+        db_id = self.life.get("finanzas")
         if not db_id:
             return []
         try:
             today = date.today().isoformat()
             results = notion.databases.query(
-                database_id=db_id,
-                filter={"property": "Fecha", "date": {"equals": today}},
+                database_id=db_id, filter={"property": "Fecha", "date": {"equals": today}},
             )
             return [
-                {
-                    "desc": e["properties"]["Descripcion"]["title"][0]["plain_text"],
-                    "amount": e["properties"]["Monto"]["number"],
-                }
-                for e in results.get("results", [])
-                if e["properties"]["Descripcion"]["title"]
+                {"desc": e["properties"]["Concepto"]["title"][0]["plain_text"],
+                 "amount": e["properties"]["Monto"]["number"],
+                 "tipo": e["properties"]["Tipo"]["select"]["name"]}
+                for e in results.get("results", []) if e["properties"]["Concepto"]["title"]
             ]
         except Exception:
             return []
@@ -534,4 +796,4 @@ class NotionHelper:
                 return title_prop["title"][0]["plain_text"]
         except Exception:
             pass
-        return "Pagina sin titulo"
+        return "Sin titulo"

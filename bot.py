@@ -12,7 +12,6 @@ TELEGRAM_API = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}"
 ai = AIHelper()
 notion = NotionHelper()
 
-# Historial de conversaciones en memoria (se reinicia con el server)
 conversations = {}
 
 
@@ -66,16 +65,25 @@ def set_webhook():
 def handle_message(message):
     chat_id = message["chat"]["id"]
 
+    # Fotos (recibos/tickets)
+    if "photo" in message:
+        handle_photo(chat_id, message)
+        return
+
+    # Documentos/archivos (para importar rutina)
+    if "document" in message:
+        handle_document(chat_id, message)
+        return
+
     if "voice" in message:
         handle_voice(chat_id, message["voice"])
         return
 
     if "text" not in message:
-        send_message(chat_id, "Por ahora solo puedo procesar texto y audio.")
+        send_message(chat_id, "Puedo procesar texto, audio, fotos y archivos.")
         return
 
     text = message["text"]
-
     if text.startswith("/"):
         handle_command(chat_id, text)
     else:
@@ -103,23 +111,19 @@ def handle_command(chat_id, text):
     elif command == "/clase":
         if not args:
             send_message(chat_id, (
-                "Usa: /clase [materia] | [tema]\n"
-                "Ej: /clase analisi | Limites de funciones\n\n"
-                "Opciones extra:\n"
-                "/clase analisi | Limites | 2026-04-15\n"
-                "/clase analisi | Limites | 2026-04-15 | https://link.com"
+                "Usa: /clase materia | tema\n"
+                "Ej: /clase analisi | Limites de funciones\n"
+                "Extra: /clase analisi | Limites | 2026-04-15 | https://link"
             ))
             return
         send_action(chat_id)
-        clase_parts = [p.strip() for p in args.split("|")]
-        if len(clase_parts) < 2:
-            send_message(chat_id, "Separa materia y tema con |\nEj: /clase analisi | Limites")
+        p = [x.strip() for x in args.split("|")]
+        if len(p) < 2:
+            send_message(chat_id, "Separa con |\nEj: /clase analisi | Limites")
             return
-        materia = clase_parts[0]
-        tema = clase_parts[1]
-        fecha = clase_parts[2] if len(clase_parts) > 2 else None
-        link = clase_parts[3] if len(clase_parts) > 3 else None
-        send_message(chat_id, notion.add_clase(materia, tema, fecha, link))
+        send_message(chat_id, notion.add_clase(
+            p[0], p[1], p[2] if len(p) > 2 else None, p[3] if len(p) > 3 else None,
+        ))
 
     elif command == "/clases":
         send_action(chat_id)
@@ -128,32 +132,94 @@ def handle_command(chat_id, text):
     elif command == "/estado":
         if not args or "|" not in args:
             send_message(chat_id, (
-                "Usa: /estado [tema] | [nuevo estado]\n"
-                "Ej: /estado Limites | Aprendido\n\n"
-                "Estados: Clase Pendiente, Estudiando, Aprendido, "
-                "Visto en clase, Clase pendiente a ver"
+                "Usa: /estado tema | nuevo estado\n"
+                "Ej: /estado Limites | Aprendido"
             ))
             return
         send_action(chat_id)
-        estado_parts = [p.strip() for p in args.split("|")]
-        send_message(chat_id, notion.update_clase_estado(estado_parts[0], estado_parts[1]))
+        p = [x.strip() for x in args.split("|")]
+        send_message(chat_id, notion.update_clase_estado(p[0], p[1]))
 
     elif command == "/examenes":
         send_action(chat_id)
         send_message(chat_id, notion.list_examenes())
 
+    # ── Finanzas ─────────────────────────────────────
+
+    elif command == "/gasto":
+        if not args:
+            send_message(chat_id, "Usa: /gasto monto descripcion [categoria]\nEj: /gasto 500 almuerzo Comida")
+            return
+        send_action(chat_id)
+        amount, desc, cat = _parse_finance_args(args)
+        if amount is None:
+            amount, desc, cat = ai.parse_expense(args)
+            if amount is None:
+                send_message(chat_id, "No entendi el monto. Ej: /gasto 500 almuerzo")
+                return
+        send_message(chat_id, notion.add_transaction(amount, desc, "Gasto", cat))
+
+    elif command == "/ingreso":
+        if not args:
+            send_message(chat_id, "Usa: /ingreso monto descripcion [categoria]\nEj: /ingreso 50000 sueldo Sueldo")
+            return
+        send_action(chat_id)
+        amount, desc, cat = _parse_finance_args(args)
+        if amount is None:
+            amount, desc, cat = ai.parse_expense(args)
+            if amount is None:
+                send_message(chat_id, "No entendi el monto.")
+                return
+        send_message(chat_id, notion.add_transaction(amount, desc, "Ingreso", cat))
+
+    elif command == "/fijo":
+        if not args:
+            send_message(chat_id, (
+                "Usa: /fijo monto | descripcion | tipo | categoria | dia\n"
+                "Ej: /fijo 500 | Netflix | Gasto | Suscripciones | 15\n"
+                "Ej: /fijo 50000 | Sueldo | Ingreso | Sueldo | 1"
+            ))
+            return
+        send_action(chat_id)
+        p = [x.strip() for x in args.split("|")]
+        try:
+            amount = float(p[0].replace("$", "").replace(",", "."))
+            desc = p[1] if len(p) > 1 else "Sin descripcion"
+            tipo = p[2] if len(p) > 2 else "Gasto"
+            cat = p[3] if len(p) > 3 else "Otros"
+            dia = int(p[4]) if len(p) > 4 else 1
+        except (ValueError, IndexError):
+            send_message(chat_id, "Formato: /fijo monto | descripcion | Gasto/Ingreso | categoria | dia")
+            return
+        send_message(chat_id, notion.add_fixed(amount, desc, tipo, cat, dia))
+
+    elif command == "/fijos":
+        send_action(chat_id)
+        send_message(chat_id, notion.list_fixed())
+
+    elif command == "/finanzas":
+        send_action(chat_id)
+        period = args.strip().lower() if args else "today"
+        if period in ("mes", "month", "mensual"):
+            period = "month"
+        send_message(chat_id, notion.list_finances(period))
+
+    elif command == "/gastos":
+        send_action(chat_id)
+        send_message(chat_id, notion.list_finances("today"))
+
     # ── Personal ─────────────────────────────────────
 
     elif command == "/nota":
         if not args:
-            send_message(chat_id, "Usa: /nota [tu nota]")
+            send_message(chat_id, "Usa: /nota tu nota")
             return
         send_action(chat_id)
         send_message(chat_id, notion.add_note(args))
 
     elif command == "/tarea":
         if not args:
-            send_message(chat_id, "Usa: /tarea [descripcion]")
+            send_message(chat_id, "Usa: /tarea descripcion")
             return
         send_action(chat_id)
         send_message(chat_id, notion.add_task(args))
@@ -162,30 +228,9 @@ def handle_command(chat_id, text):
         send_action(chat_id)
         send_message(chat_id, notion.list_tasks())
 
-    elif command == "/gasto":
-        if not args:
-            send_message(chat_id, "Usa: /gasto [monto] [descripcion]\nEj: /gasto 500 almuerzo")
-            return
-        send_action(chat_id)
-        gasto_parts = args.split(maxsplit=1)
-        try:
-            amount = float(gasto_parts[0].replace("$", "").replace(",", "."))
-            desc = gasto_parts[1] if len(gasto_parts) > 1 else "Sin descripcion"
-            category = "Otros"
-        except ValueError:
-            amount, desc, category = ai.parse_expense(args)
-            if amount is None:
-                send_message(chat_id, "No pude entender el monto. Usa: /gasto 500 almuerzo")
-                return
-        send_message(chat_id, notion.add_expense(amount, desc, category))
-
-    elif command == "/gastos":
-        send_action(chat_id)
-        send_message(chat_id, notion.list_expenses())
-
     elif command == "/habito":
         if not args:
-            send_message(chat_id, "Usa: /habito [nombre]\nEj: /habito ejercicio")
+            send_message(chat_id, "Usa: /habito nombre\nEj: /habito ejercicio")
             return
         send_action(chat_id)
         send_message(chat_id, notion.track_habit(args))
@@ -194,32 +239,56 @@ def handle_command(chat_id, text):
         send_action(chat_id)
         send_message(chat_id, notion.list_habits())
 
+    # ── Rutina ───────────────────────────────────────
+
+    elif command == "/rutina":
+        send_action(chat_id)
+        dia = args.strip().capitalize() if args else None
+        send_message(chat_id, notion.list_routine(dia))
+
+    elif command == "/ejercicio":
+        if not args:
+            send_message(chat_id, (
+                "Usa: /ejercicio nombre | dia | series | reps | musculo\n"
+                "Ej: /ejercicio Press banca | Lunes | 4 | 10 | Pecho"
+            ))
+            return
+        send_action(chat_id)
+        p = [x.strip() for x in args.split("|")]
+        send_message(chat_id, notion.add_exercise(
+            p[0],
+            p[1] if len(p) > 1 else "Lunes",
+            int(p[2]) if len(p) > 2 and p[2].isdigit() else 0,
+            p[3] if len(p) > 3 else "",
+            p[4] if len(p) > 4 else "",
+        ))
+
     # ── Estudio ──────────────────────────────────────
 
     elif command == "/flashcards":
         if not args:
-            send_message(chat_id, "Usa: /flashcards [tema]\nEj: /flashcards fotosintesis")
+            send_message(chat_id, "Usa: /flashcards tema")
             return
         send_action(chat_id)
         send_message(chat_id, ai.generate_flashcards(args))
 
     elif command == "/quiz":
         if not args:
-            send_message(chat_id, "Usa: /quiz [tema]\nEj: /quiz historia argentina")
+            send_message(chat_id, "Usa: /quiz tema")
             return
         send_action(chat_id)
         send_message(chat_id, ai.generate_quiz(args))
 
     elif command == "/resumir":
         if not args:
-            send_message(chat_id, "Usa: /resumir [texto largo]")
+            send_message(chat_id, "Usa: /resumir texto")
             return
         send_action(chat_id)
         send_message(chat_id, ai.summarize(args))
 
     elif command == "/explicar":
         if not args:
-            send_message(chat_id, "Usa: /explicar [concepto]\nEj: /explicar derivadas")
+            send_message(chat_id, "Usa: /explicar concepto")
             return
         send_action(chat_id)
         send_message(chat_id, ai.explain(args))
@@ -236,6 +305,108 @@ def handle_command(chat_id, text):
         send_message(chat_id, "Comando no reconocido. Usa /start para ver los comandos.")
 
 
+def _parse_finance_args(args: str):
+    """Parsea: monto descripcion [categoria]"""
+    parts = args.split()
+    try:
+        amount = float(parts[0].replace("$", "").replace(",", "."))
+    except (ValueError, IndexError):
+        return None, None, None
+
+    # Categorias conocidas
+    categories = [
+        "Comida", "Transporte", "Entretenimiento", "Salud", "Educacion",
+        "Alquiler", "Servicios", "Ropa", "Sueldo", "Freelance", "Regalo", "Otros",
+    ]
+    cat = "Otros"
+    desc_parts = parts[1:]
+
+    # Si la ultima palabra es una categoria
+    if desc_parts and desc_parts[-1].capitalize() in categories:
+        cat = desc_parts[-1].capitalize()
+        desc_parts = desc_parts[:-1]
+
+    desc = " ".join(desc_parts) if desc_parts else "Sin descripcion"
+    return amount, desc, cat
+
+
+# ── Fotos (recibos/tickets) ─────────────────────────────
+
+def handle_photo(chat_id, message):
+    """Recibe una foto, la analiza con IA y registra gasto/ingreso."""
+    send_action(chat_id)
+
+    # Tomar la foto de mayor resolucion
+    photo = message["photo"][-1]
+    file_info = requests.get(
+        f"{TELEGRAM_API}/getFile", params={"file_id": photo["file_id"]}
+    ).json()
+    file_path = file_info["result"]["file_path"]
+    file_url = f"https://api.telegram.org/file/bot{TELEGRAM_TOKEN}/{file_path}"
+    image_data = requests.get(file_url).content
+
+    caption = message.get("caption", "")
+
+    # Analizar con IA
+    result = ai.analyze_receipt(image_data, caption)
+
+    if not result:
+        send_message(chat_id, "No pude analizar la imagen. Intenta con mejor calidad o agrega una descripcion.")
+        return
+
+    tipo = result.get("tipo", "Gasto")
+    amount = result.get("amount", 0)
+    desc = result.get("description", "Sin descripcion")
+    cat = result.get("category", "Otros")
+
+    if amount <= 0:
+        send_message(chat_id, f"Detecte: {desc}\nPero no pude leer el monto. Usa:\n/gasto [monto] {desc}")
+        return
+
+    response = notion.add_transaction(amount, desc, tipo, cat)
+    send_message(chat_id, f"Foto analizada:\n{response}")
+
+
+# ── Documentos (importar rutina) ────────────────────────
+
+def handle_document(chat_id, message):
+    """Recibe un archivo y lo procesa (rutina, etc)."""
+    send_action(chat_id)
+
+    doc = message["document"]
+    file_name = doc.get("file_name", "").lower()
+
+    file_info = requests.get(
+        f"{TELEGRAM_API}/getFile", params={"file_id": doc["file_id"]}
+    ).json()
+    file_path = file_info["result"]["file_path"]
+    file_url = f"https://api.telegram.org/file/bot{TELEGRAM_TOKEN}/{file_path}"
+    file_data = requests.get(file_url).content
+
+    caption = message.get("caption", "").lower()
+
+    # Detectar si es una rutina
+    if "rutina" in caption or "gym" in caption or "ejercicio" in caption or "rutina" in file_name:
+        text_content = file_data.decode("utf-8", errors="replace")
+        exercises = ai.parse_routine(text_content)
+        if exercises:
+            result = notion.add_routine_bulk(exercises)
+            send_message(chat_id, result)
+        else:
+            send_message(chat_id, "No pude extraer ejercicios del archivo. Verifica el formato.")
+    else:
+        # Intentar leer como texto y resumir
+        try:
+            text_content = file_data.decode("utf-8", errors="replace")
+            if len(text_content) > 100:
+                summary = ai.summarize(text_content[:5000])
+                send_message(chat_id, f"*Resumen del archivo:*\n\n{summary}")
+            else:
+                send_message(chat_id, "Archivo recibido pero no pude procesarlo. Agrega un caption como 'rutina' si es tu rutina de gym.")
+        except Exception:
+            send_message(chat_id, "No pude leer el archivo. Si es tu rutina, agrega 'rutina' como caption.")
+
+
 def handle_text(chat_id, text):
     send_action(chat_id)
     intent = ai.classify_intent(text)
@@ -247,7 +418,13 @@ def handle_text(chat_id, text):
     elif intent["type"] == "gasto":
         amt = intent.get("amount", 0)
         desc = intent.get("description", text)
-        send_message(chat_id, notion.add_expense(amt, desc))
+        cat = intent.get("category", "Otros")
+        send_message(chat_id, notion.add_transaction(amt, desc, "Gasto", cat))
+    elif intent["type"] == "ingreso":
+        amt = intent.get("amount", 0)
+        desc = intent.get("description", text)
+        cat = intent.get("category", "Otros")
+        send_message(chat_id, notion.add_transaction(amt, desc, "Ingreso", cat))
     elif intent["type"] == "habito":
         send_message(chat_id, notion.track_habit(intent.get("content", text)))
     else:
@@ -272,7 +449,7 @@ def handle_voice(chat_id, voice):
 
     transcription = ai.transcribe(audio_data)
     if not transcription:
-        send_message(chat_id, "No pude entender el audio. Intenta de nuevo.")
+        send_message(chat_id, "No pude entender el audio.")
         return
 
     send_message(chat_id, f"_Transcripcion:_ {transcription}")
@@ -283,39 +460,48 @@ def handle_voice(chat_id, voice):
 
 WELCOME_MSG = """*Hola! Soy tu asistente personal*
 
-Esto es lo que puedo hacer:
-
-*Facultad (Politecnico di Milano)*
-/materias - Ver tus materias
-/clase [materia] | [tema] - Agregar clase
+*Facultad*
+/materias - Ver materias
+/clase materia | tema - Agregar clase
 /clases - Ver clases pendientes
-/estado [tema] | [estado] - Cambiar estado de clase
-/examenes - Ver proximos examenes
+/estado tema | estado - Cambiar estado
+/examenes - Proximos examenes
 
-*Notas y Tareas personales*
-/nota [texto] - Guardar una nota
-/tarea [texto] - Agregar tarea
-/tareas - Ver tareas pendientes
+*Finanzas*
+/gasto monto descripcion - Registrar gasto
+/ingreso monto descripcion - Registrar ingreso
+/fijo monto | desc | tipo | cat | dia - Gasto/ingreso fijo
+/fijos - Ver fijos mensuales
+/finanzas - Resumen de hoy
+/finanzas mes - Resumen del mes
+Tambien podes mandar una FOTO de un ticket!
+
+*Notas y Tareas*
+/nota texto - Guardar nota
+/tarea descripcion - Agregar tarea
+/tareas - Ver pendientes
+
+*Rutina*
+/rutina - Ver rutina completa
+/rutina Lunes - Ver dia especifico
+/ejercicio nombre | dia | series | reps | musculo
+Manda un archivo con caption "rutina" para importar!
 
 *Estudio*
-/flashcards [tema] - Generar flashcards
-/quiz [tema] - Hacerte un quiz
-/resumir [texto] - Resumir un texto
-/explicar [concepto] - Explicar algo
-
-*Gastos*
-/gasto [monto] [descripcion]
-/gastos - Ver gastos del dia
+/flashcards tema - Flashcards
+/quiz tema - Quiz
+/resumir texto - Resumir
+/explicar concepto - Explicar
 
 *Habitos*
-/habito [nombre] - Registrar habito
-/habitos - Ver habitos de hoy
+/habito nombre - Registrar
+/habitos - Ver hoy
 
 *Otros*
 /briefing - Resumen del dia
 /setup - Configurar Notion
 
-Tambien podes hablarme normal o mandarme audios!"""
+Hablame normal o mandame audios!"""
 
 
 if __name__ == "__main__":
