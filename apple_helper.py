@@ -1,4 +1,5 @@
 import os
+import unicodedata
 from datetime import datetime, timedelta, date
 from dateutil import tz, parser as dateutil_parser
 
@@ -45,37 +46,46 @@ def _get_calendars(principal, cal_type="VEVENT"):
 
 
 DAY_NAMES_ES = {
-    "lunes": 0, "martes": 1, "miercoles": 2, "miércoles": 2,
-    "jueves": 3, "viernes": 4, "sabado": 5, "sábado": 5, "domingo": 6,
+    "lunes": 0, "martes": 1, "miercoles": 2, "jueves": 3,
+    "viernes": 4, "sabado": 5, "domingo": 6,
 }
 
+
+def _strip_accents(s: str) -> str:
+    return "".join(
+        c for c in unicodedata.normalize("NFD", s)
+        if unicodedata.category(c) != "Mn"
+    )
+
+
 def _resolve_date(fecha: str) -> str:
-    """Convierte cualquier string de fecha a YYYY-MM-DD. Maneja nombres de dias en español."""
+    """Convierte cualquier string de fecha a YYYY-MM-DD."""
     if not fecha:
         return date.today().isoformat()
 
-    # Already ISO format
+    # Already ISO format YYYY-MM-DD
     try:
         datetime.fromisoformat(fecha)
         return fecha
-    except ValueError:
+    except (ValueError, TypeError):
         pass
 
-    # Spanish day name -> next occurrence
-    fecha_lower = fecha.lower().strip()
-    if fecha_lower in DAY_NAMES_ES:
+    # Normalize: lowercase + strip accents
+    fecha_norm = _strip_accents(fecha.lower().strip())
+
+    # Spanish day name
+    if fecha_norm in DAY_NAMES_ES:
         today = date.today()
-        target_weekday = DAY_NAMES_ES[fecha_lower]
+        target_weekday = DAY_NAMES_ES[fecha_norm]
         days_ahead = (target_weekday - today.weekday()) % 7
         if days_ahead == 0:
-            days_ahead = 7  # next week if today is that day
+            days_ahead = 7
         return (today + timedelta(days=days_ahead)).isoformat()
 
-    # "manana" / "mañana"
-    if fecha_lower in ("manana", "mañana", "tomorrow"):
+    # Relative
+    if fecha_norm in ("manana", "tomorrow"):
         return (date.today() + timedelta(days=1)).isoformat()
-
-    if fecha_lower in ("hoy", "today"):
+    if fecha_norm in ("hoy", "today"):
         return date.today().isoformat()
 
     # Try dateutil as fallback

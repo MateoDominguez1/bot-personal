@@ -600,9 +600,11 @@ def handle_text(chat_id, text):
 
     # ── Apple Calendar ───────────────────────────────
     elif t == "apple_evento":
+        from apple_helper import _resolve_date
+        intent["fecha"] = _resolve_date(intent.get("fecha", ""))
         result = apple.add_calendar_event(
             titulo=intent.get("titulo", text),
-            fecha=intent.get("fecha", ""),
+            fecha=intent["fecha"],
             hora=intent.get("hora"),
             duracion_min=intent.get("duracion_min", 60),
             calendario=intent.get("calendario"),
